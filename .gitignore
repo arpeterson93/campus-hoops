@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# PyCharm
+.idea/
+
+# Campus Hoops save data
+*.campushoops
+saint_francis_pa_*/
+session.json/
+session_modified.json
+
+# OS
+Thumbs.db
+.DS_Store
