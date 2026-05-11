@@ -385,6 +385,17 @@ def render_create_challenge():
     conditions: dict = st.session_state["draft_conditions"]
 
     # -- add a condition
+    # Which condition types take which input widget
+    _BOOL_CONDITIONS = {
+        "must_win_championship", "must_make_tournament",
+        "must_make_final_four", "single_team_only",
+    }
+    _TEXT_CONDITIONS = {"start_team_id"}
+    _NUMBER_CONDITIONS_PRESTIGE = {"max_start_prestige", "max_recruit_rating"}  # 1–99
+    _NUMBER_CONDITIONS_COUNT = {
+        "min_championships", "min_tournament_appearances", "max_seasons",
+    }  # 1+
+
     with st.expander("Add a condition", expanded=not conditions):
         ctype = st.selectbox(
             "Condition type",
@@ -393,15 +404,20 @@ def render_create_challenge():
         )
         st.caption(vf.CONDITION_HELP.get(ctype, ""))
 
-        if ctype == "team_id":
+        if ctype in _BOOL_CONDITIONS:
+            cval = True
+            st.info("This condition is either required or not — add it to require it.")
+        elif ctype in _TEXT_CONDITIONS:
             cval = st.text_input("Team ID", placeholder="saint_francis_pa")
-        elif ctype in ("max_seasons", "min_championships", "max_transfer_rating"):
-            cval = st.number_input("Value", min_value=1, value=5)
-        elif ctype == "must_win_championship":
-            cval = st.checkbox("Required", value=True)
+        elif ctype in _NUMBER_CONDITIONS_PRESTIGE:
+            cval = st.slider("Value", min_value=1, max_value=99, value=50)
+        elif ctype in _NUMBER_CONDITIONS_COUNT:
+            cval = st.number_input("Value", min_value=1, value=1)
+        else:
+            cval = None
 
         if st.button("Add condition"):
-            if ctype and cval not in (None, "", 0):
+            if cval not in (None, "", 0):
                 conditions[ctype] = cval
                 st.session_state["draft_conditions"] = conditions
                 st.rerun()
