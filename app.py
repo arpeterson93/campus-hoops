@@ -32,11 +32,16 @@ def _find_save_root(extracted_dir: str) -> str:
 
 with st.sidebar:
     st.header("Save File")
-    uploaded = st.file_uploader("Upload save file", type=["zip", "campushoops"])
+    uploaded = st.file_uploader("Upload save file (.campushoops or .zip)")
 
     if not uploaded:
         st.info("Upload your exported save file (.campushoops or .zip) to get started.")
         st.stop()
+
+    if not zipfile.is_zipfile(uploaded):
+        st.error("That file doesn't appear to be a valid save export. Please upload a .campushoops or .zip file.")
+        st.stop()
+    uploaded.seek(0)
 
     # Re-extract only when a new file is uploaded
     upload_key = f"{uploaded.name}_{uploaded.size}"
