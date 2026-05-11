@@ -186,23 +186,31 @@ def _verify_max_recruit_rating(save: SaveFile, conn: sqlite3.Connection, expecte
 # ------------------------------------------------------------------ career stats helper
 
 def get_career_stats(save: SaveFile) -> dict:
-    """Extract coach name and career win/loss totals from history.db."""
+    """Extract coach name, career record, and seasons played from history.db."""
     conn = save.history
+
     name_row = conn.execute(
         "SELECT coach_name FROM coach_career WHERE coach_id = ? ORDER BY season_year DESC LIMIT 1",
         (USER_COACH_ID,)
     ).fetchone()
+
     totals = conn.execute(
         "SELECT SUM(wins) as w, SUM(losses) as l FROM coach_career WHERE coach_id = ?",
         (USER_COACH_ID,)
     ).fetchone()
     wins = totals["w"] or 0
     losses = totals["l"] or 0
+
+    seasons_row = conn.execute(
+        "SELECT COUNT(*) as n FROM user_season_recaps"
+    ).fetchone()
+
     return {
         "coach_name": name_row["coach_name"] if name_row else "Unknown",
         "career_wins": wins,
         "career_losses": losses,
         "win_pct": round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0.0,
+        "seasons_played": seasons_row["n"] if seasons_row else 0,
     }
 
 

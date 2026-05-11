@@ -51,14 +51,13 @@ def create_challenge(created_by: str, name: str, description: str, conditions: d
 # ------------------------------------------------------------------ submissions
 
 def get_leaderboard(challenge_id: str) -> list[dict]:
-    """Return verified submissions for a challenge, sorted best first."""
+    """Return verified submissions for a challenge, sorted chronologically by submission date."""
     return (
         _client().table("submissions")
         .select("*")
         .eq("challenge_id", challenge_id)
         .eq("verified", True)
-        .order("season_year", desc=False)
-        .order("play_time_seconds", desc=False)
+        .order("submitted_at", desc=False)
         .execute()
         .data
     )
@@ -69,7 +68,7 @@ def upsert_submission(
     challenge_id: str,
     team_name: str,
     team_id: str,
-    season_year: int,
+    seasons_played: int,
     play_time_seconds: int,
     verified: bool,
     conditions_met: dict,
@@ -86,7 +85,7 @@ def upsert_submission(
                 "challenge_id": challenge_id,
                 "team_name": team_name,
                 "team_id": team_id,
-                "season_year": season_year,
+                "seasons_played": seasons_played,
                 "play_time_seconds": play_time_seconds,
                 "verified": verified,
                 "conditions_met": conditions_met,

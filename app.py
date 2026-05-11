@@ -282,11 +282,11 @@ def render_leaderboard():
         l = e.get("career_losses") or 0
         win_pct = f"{w / (w + l) * 100:.1f}%" if (w + l) > 0 else "—"
         rows.append({
-            "Rank": i,
+            "#": i,
             "Username": e["username"],
             "Coach": e.get("coach_name") or "—",
             "Team": e["team_name"],
-            "Season": e["season_year"],
+            "Seasons": e.get("seasons_played") or "—",
             "W": w,
             "L": l,
             "Win %": win_pct,
@@ -356,6 +356,7 @@ def render_submit():
     st.success("All conditions passed! Ready to submit.")
     st.caption(
         f"Coach: **{career['coach_name']}** — "
+        f"{career['seasons_played']} seasons — "
         f"{career['career_wins']}W / {career['career_losses']}L "
         f"({career['win_pct']}%)"
     )
@@ -374,7 +375,7 @@ def render_submit():
             challenge_id=challenge["id"],
             team_name=save.meta.get("teamName", ""),
             team_id=save.meta.get("teamId", ""),
-            season_year=save.meta.get("seasonYear", 0),
+            seasons_played=career["seasons_played"],
             play_time_seconds=save.meta.get("playTimeSeconds", 0),
             verified=True,
             conditions_met=results,
