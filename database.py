@@ -73,6 +73,9 @@ def upsert_submission(
     play_time_seconds: int,
     verified: bool,
     conditions_met: dict,
+    coach_name: str = "",
+    career_wins: int = 0,
+    career_losses: int = 0,
 ) -> dict:
     """Insert or overwrite the user's entry for this challenge."""
     return (
@@ -87,6 +90,9 @@ def upsert_submission(
                 "play_time_seconds": play_time_seconds,
                 "verified": verified,
                 "conditions_met": conditions_met,
+                "coach_name": coach_name,
+                "career_wins": career_wins,
+                "career_losses": career_losses,
             },
             on_conflict="username,challenge_id",
         )

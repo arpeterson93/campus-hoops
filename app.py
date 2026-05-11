@@ -5,22 +5,27 @@ Run with:
     streamlit run app.py
 """
 
-import json
-import math
 import os
 import shutil
 import tempfile
 import zipfile
 
 import streamlit as st
+from better_profanity import profanity as _profanity
 
 import database as db
 import verifier as vf
 from recruiting import POSITION_ABBR, RecruitingPool, fmt_height
 from save_loader import SaveFile
 
+_profanity.load_censor_words()
+
 st.set_page_config(page_title="Campus Hoops Utility", layout="wide")
 st.title("Campus Hoops Utility")
+
+
+def _is_clean(text: str) -> bool:
+    return not _profanity.contains_profanity(text)
 
 
 # ================================================================== shared: file upload
@@ -273,11 +278,18 @@ def render_leaderboard():
     import pandas as pd
     rows = []
     for i, e in enumerate(entries, 1):
+        w = e.get("career_wins") or 0
+        l = e.get("career_losses") or 0
+        win_pct = f"{w / (w + l) * 100:.1f}%" if (w + l) > 0 else "—"
         rows.append({
             "Rank": i,
             "Username": e["username"],
+            "Coach": e.get("coach_name") or "—",
             "Team": e["team_name"],
             "Season": e["season_year"],
+            "W": w,
+            "L": l,
+            "Win %": win_pct,
             "Play Time": _fmt_playtime(e.get("play_time_seconds")),
             "Submitted": str(e.get("submitted_at", ""))[:10],
         })
@@ -318,12 +330,17 @@ def render_submit():
         st.warning("Enter a username to continue.")
         return
 
+    if not _is_clean(username):
+        st.error("Please choose an appropriate username.")
+        return
+
     st.divider()
     st.subheader("Verification")
     st.caption("The following conditions will be checked against your save:")
 
     conditions = challenge.get("conditions", {})
     results = vf.verify(save, conditions)
+    career = vf.get_career_stats(save)
 
     all_ok = vf.all_passed(results)
     for key, r in results.items():
@@ -337,6 +354,11 @@ def render_submit():
         return
 
     st.success("All conditions passed! Ready to submit.")
+    st.caption(
+        f"Coach: **{career['coach_name']}** — "
+        f"{career['career_wins']}W / {career['career_losses']}L "
+        f"({career['win_pct']}%)"
+    )
 
     existing = db.get_leaderboard(challenge["id"])
     existing_entry = next((e for e in existing if e["username"] == username.strip()), None)
@@ -356,6 +378,9 @@ def render_submit():
             play_time_seconds=save.meta.get("playTimeSeconds", 0),
             verified=True,
             conditions_met=results,
+            coach_name=career["coach_name"],
+            career_wins=career["career_wins"],
+            career_losses=career["career_losses"],
         )
         st.success("Submitted! Check the Leaderboard page to see your entry.")
         st.balloons()
@@ -449,6 +474,10 @@ def render_create_challenge():
     ready = creator.strip() and name.strip()
     if not ready:
         st.warning("Enter your name and a challenge name to publish.")
+        return
+
+    if not _is_clean(creator) or not _is_clean(name) or not _is_clean(description):
+        st.error("Please keep challenge content appropriate.")
         return
 
     if st.button("Publish Challenge", type="primary"):
