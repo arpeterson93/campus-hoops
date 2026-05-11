@@ -5,6 +5,8 @@ Run with:
     streamlit run app.py
 """
 
+import json
+import math
 import os
 import shutil
 import tempfile
@@ -12,16 +14,18 @@ import zipfile
 
 import streamlit as st
 
+import database as db
+import verifier as vf
 from recruiting import POSITION_ABBR, RecruitingPool, fmt_height
 from save_loader import SaveFile
 
 st.set_page_config(page_title="Campus Hoops Utility", layout="wide")
 st.title("Campus Hoops Utility")
 
-# ------------------------------------------------------------------ file upload
+
+# ================================================================== shared: file upload
 
 def _find_save_root(extracted_dir: str) -> str:
-    """If the zip contained a single folder, step into it; otherwise use root."""
     contents = os.listdir(extracted_dir)
     if len(contents) == 1:
         candidate = os.path.join(extracted_dir, contents[0])
@@ -39,11 +43,10 @@ with st.sidebar:
         st.stop()
 
     if not zipfile.is_zipfile(uploaded):
-        st.error("That file doesn't appear to be a valid save export. Please upload a .campushoops or .zip file.")
+        st.error("That file doesn't appear to be a valid save export.")
         st.stop()
     uploaded.seek(0)
 
-    # Re-extract only when a new file is uploaded
     upload_key = f"{uploaded.name}_{uploaded.size}"
     if st.session_state.get("upload_key") != upload_key:
         old_dir = st.session_state.get("temp_dir")
@@ -58,18 +61,29 @@ with st.sidebar:
         st.session_state["upload_key"] = upload_key
         st.session_state["temp_dir"] = temp_dir
         st.session_state["save"] = SaveFile(save_root)
+        st.session_state.pop("pool", None)
 
 save: SaveFile = st.session_state["save"]
 
-# ------------------------------------------------------------------ page nav
+with st.sidebar:
+    st.caption(
+        f"**{save.meta.get('teamName')}** — Season {save.meta.get('seasonYear')}\n\n"
+        f"Last saved: {save.meta.get('lastSaved', '')[:10]}"
+    )
 
-page = st.sidebar.radio("Page", ["Recruiting Pool"])  # more pages added later
+# ================================================================== page nav
+
+page = st.sidebar.radio(
+    "Page",
+    ["Recruiting Pool", "Leaderboard", "Submit to Challenge", "Create Challenge"],
+)
+
 
 # ================================================================== Recruiting Pool
-if page == "Recruiting Pool":
+
+def render_recruiting():
     st.header("Recruiting Pool")
 
-    # session.json is lazy-loaded; pool is cached in session_state after first access
     if "pool" not in st.session_state or st.session_state.get("pool_key") != upload_key:
         raw_pool = save.get("season.recruitingPool") or []
         st.session_state["pool"] = raw_pool
@@ -78,7 +92,6 @@ if page == "Recruiting Pool":
     pool = RecruitingPool(st.session_state["pool"])
     st.caption(f"{len(pool)} recruits in pool")
 
-    # ---------------------------------------------------------------- filters
     with st.sidebar:
         st.header("Filters")
 
@@ -121,17 +134,12 @@ if page == "Recruiting Pool":
             "perimeterDefense", "interiorDefense", "stealing", "blocking",
         ])
 
-    # ---------------------------------------------------------------- apply filters
     filtered = pool.filter(
         position=selected_positions if selected_positions else None,
-        min_rating=min_rating,
-        max_rating=max_rating,
-        min_potential=min_potential,
-        max_potential=max_potential,
-        min_height=height_range[0],
-        max_height=height_range[1],
-        min_stars=min_stars,
-        max_ranking=max_ranking,
+        min_rating=min_rating, max_rating=max_rating,
+        min_potential=min_potential, max_potential=max_potential,
+        min_height=height_range[0], max_height=height_range[1],
+        min_stars=min_stars, max_ranking=max_ranking,
         state=state_filter,
         recruit_type=type_map[recruit_type],
         is_scouted=scouted_map[scouted_filter],
@@ -139,10 +147,8 @@ if page == "Recruiting Pool":
 
     filtered_sorted = sorted(filtered, key=lambda r: r.get(sort_by) or 0, reverse=True)
     df = pool.to_df(filtered_sorted)
-
     st.caption(f"Showing {len(df)} recruits")
 
-    # ---------------------------------------------------------------- display
     col_cfg = {
         "height": st.column_config.TextColumn(
             "Height",
@@ -154,35 +160,29 @@ if page == "Recruiting Pool":
     core_cols = ["name", "pos", "stars", "rating", "potential", "ranking",
                  "pos_rank", "height", "weight", "state", "hometown", "type",
                  "scouted", "late_bloomer", "generational", "schools", "awards"]
-
     skill_cols = ["inside", "mid", "outside", "handling", "passing",
                   "rebounding", "perim_def", "int_def", "stealing", "blocking"]
-
     personality_cols = ["loyalty", "ambition", "playing_time_desire", "home_attachment"]
 
     tab1, tab2, tab3 = st.tabs(["Overview", "Skills", "Personality"])
-
     with tab1:
         st.dataframe(df[core_cols], column_config=col_cfg, use_container_width=True, hide_index=True)
-
     with tab2:
         st.dataframe(df[["name", "pos", "rating", "height"] + skill_cols],
                      column_config=col_cfg, use_container_width=True, hide_index=True)
-
     with tab3:
         st.info(
             "**Personality as recruiting propensity**\n\n"
-            "- **Loyalty** — prefers staying close to home; harder to pull away\n"
+            "- **Loyalty** — prefers staying close to home\n"
             "- **Home Attachment** — weights distance from hometown heavily\n"
             "- **Playing Time Desire** — will prioritize where he's most likely to start\n"
             "- **Ambition** — chases prestige; easier to flip toward higher-ranked programs\n\n"
-            "The `interest` column reflects recruiting points you've already assigned in-game, "
+            "The `interest` column reflects recruiting points you've assigned in-game, "
             "not innate propensity."
         )
         st.dataframe(df[["name", "pos", "rating"] + personality_cols],
                      use_container_width=True, hide_index=True)
 
-    # ---------------------------------------------------------------- recruit detail
     st.divider()
     st.subheader("Recruit Detail")
     selected_name = st.selectbox("Select a recruit", df["name"].tolist())
@@ -218,3 +218,238 @@ if page == "Recruiting Pool":
                 col_flags[1].success("Generational Talent")
             if match.get("isTransferPortal"):
                 col_flags[2].warning("Transfer Portal")
+
+
+# ================================================================== Leaderboard
+
+def _fmt_playtime(seconds: int | None) -> str:
+    if not seconds:
+        return ""
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{h}h {m}m"
+
+
+def render_leaderboard():
+    st.header("Leaderboard")
+
+    try:
+        challenges = db.get_active_challenges()
+    except Exception as e:
+        st.error(f"Could not load challenges: {e}")
+        return
+
+    if not challenges:
+        st.info("No challenges yet. Be the first to create one!")
+        return
+
+    challenge_names = [c["name"] for c in challenges]
+    selected_name = st.selectbox("Select a challenge", challenge_names)
+    challenge = next(c for c in challenges if c["name"] == selected_name)
+
+    st.markdown(f"**{challenge['name']}**")
+    if challenge.get("description"):
+        st.caption(challenge["description"])
+
+    with st.expander("Challenge conditions"):
+        conditions = challenge.get("conditions", {})
+        for key, val in conditions.items():
+            label = vf.CONDITION_LABELS.get(key, key)
+            st.markdown(f"- **{label}**: {val}")
+
+    st.divider()
+
+    entries = db.get_leaderboard(challenge["id"])
+
+    if not entries:
+        st.info("No verified submissions yet for this challenge.")
+        return
+
+    import pandas as pd
+    rows = []
+    for i, e in enumerate(entries, 1):
+        rows.append({
+            "Rank": i,
+            "Username": e["username"],
+            "Team": e["team_name"],
+            "Season": e["season_year"],
+            "Play Time": _fmt_playtime(e.get("play_time_seconds")),
+            "Submitted": str(e.get("submitted_at", ""))[:10],
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ================================================================== Submit to Challenge
+
+def render_submit():
+    st.header("Submit to Challenge")
+    st.caption(
+        f"Submitting save: **{save.meta.get('teamName')}** — "
+        f"Season {save.meta.get('seasonYear')}"
+    )
+
+    try:
+        challenges = db.get_active_challenges()
+    except Exception as e:
+        st.error(f"Could not load challenges: {e}")
+        return
+
+    if not challenges:
+        st.info("No active challenges to submit to.")
+        return
+
+    username = st.text_input("Your leaderboard username", max_chars=32)
+
+    challenge_names = [c["name"] for c in challenges]
+    selected_name = st.selectbox("Choose a challenge", challenge_names)
+    challenge = next(c for c in challenges if c["name"] == selected_name)
+
+    if challenge.get("description"):
+        st.caption(challenge["description"])
+
+    if not username.strip():
+        st.warning("Enter a username to continue.")
+        return
+
+    st.divider()
+    st.subheader("Verification")
+    st.caption("The following conditions will be checked against your save:")
+
+    conditions = challenge.get("conditions", {})
+    results = vf.verify(save, conditions)
+
+    all_ok = vf.all_passed(results)
+    for key, r in results.items():
+        icon = "✅" if r["passed"] else "❌"
+        st.markdown(f"{icon} **{r['label']}** — {r['detail']}")
+
+    st.divider()
+
+    if not all_ok:
+        st.error("Your save does not meet all challenge conditions. Not eligible to submit.")
+        return
+
+    st.success("All conditions passed! Ready to submit.")
+
+    existing = db.get_leaderboard(challenge["id"])
+    existing_entry = next((e for e in existing if e["username"] == username.strip()), None)
+    if existing_entry:
+        st.warning(
+            f"You already have an entry for this challenge (Season {existing_entry['season_year']}). "
+            "Submitting will overwrite it."
+        )
+
+    if st.button("Submit to Leaderboard", type="primary"):
+        db.upsert_submission(
+            username=username.strip(),
+            challenge_id=challenge["id"],
+            team_name=save.meta.get("teamName", ""),
+            team_id=save.meta.get("teamId", ""),
+            season_year=save.meta.get("seasonYear", 0),
+            play_time_seconds=save.meta.get("playTimeSeconds", 0),
+            verified=True,
+            conditions_met=results,
+        )
+        st.success("Submitted! Check the Leaderboard page to see your entry.")
+        st.balloons()
+
+
+# ================================================================== Create Challenge
+
+def render_create_challenge():
+    st.header("Create a Challenge")
+    st.caption(
+        "Define a challenge with auto-verifiable conditions. "
+        "Other players will submit their saves and be checked against these rules."
+    )
+
+    creator = st.text_input("Your name / username", max_chars=32)
+    name = st.text_input("Challenge name", max_chars=80, placeholder="Rags to Riches")
+    description = st.text_area(
+        "Description",
+        placeholder="Start with a low-prestige team and win the national championship.",
+        max_chars=500,
+    )
+
+    st.divider()
+    st.subheader("Conditions")
+    st.caption(
+        "Add conditions that will be automatically verified against each submission's save file. "
+        "Anything not listed here is honor system — describe it in the challenge description."
+    )
+
+    if "draft_conditions" not in st.session_state:
+        st.session_state["draft_conditions"] = {}
+
+    conditions: dict = st.session_state["draft_conditions"]
+
+    # -- add a condition
+    with st.expander("Add a condition", expanded=not conditions):
+        ctype = st.selectbox(
+            "Condition type",
+            list(vf.CONDITION_LABELS.keys()),
+            format_func=lambda k: vf.CONDITION_LABELS[k],
+        )
+        st.caption(vf.CONDITION_HELP.get(ctype, ""))
+
+        if ctype == "team_id":
+            cval = st.text_input("Team ID", placeholder="saint_francis_pa")
+        elif ctype in ("max_seasons", "min_championships", "max_transfer_rating"):
+            cval = st.number_input("Value", min_value=1, value=5)
+        elif ctype == "must_win_championship":
+            cval = st.checkbox("Required", value=True)
+
+        if st.button("Add condition"):
+            if ctype and cval not in (None, "", 0):
+                conditions[ctype] = cval
+                st.session_state["draft_conditions"] = conditions
+                st.rerun()
+
+    # -- show current conditions
+    if conditions:
+        st.markdown("**Current conditions:**")
+        to_remove = None
+        for key, val in conditions.items():
+            col_l, col_r = st.columns([5, 1])
+            col_l.markdown(f"- **{vf.CONDITION_LABELS.get(key, key)}**: {val}")
+            if col_r.button("Remove", key=f"rm_{key}"):
+                to_remove = key
+        if to_remove:
+            del conditions[to_remove]
+            st.session_state["draft_conditions"] = conditions
+            st.rerun()
+    else:
+        st.info("No conditions added yet. A challenge with no conditions is fully honor system.")
+
+    st.divider()
+
+    ready = creator.strip() and name.strip()
+    if not ready:
+        st.warning("Enter your name and a challenge name to publish.")
+        return
+
+    if st.button("Publish Challenge", type="primary"):
+        try:
+            db.create_challenge(
+                created_by=creator.strip(),
+                name=name.strip(),
+                description=description.strip(),
+                conditions=conditions,
+            )
+            st.session_state["draft_conditions"] = {}
+            st.success(f"Challenge '{name}' published! It will appear on the Leaderboard page.")
+        except Exception as e:
+            st.error(f"Failed to publish: {e}")
+
+
+# ================================================================== router
+
+if page == "Recruiting Pool":
+    render_recruiting()
+elif page == "Leaderboard":
+    render_leaderboard()
+elif page == "Submit to Challenge":
+    render_submit()
+elif page == "Create Challenge":
+    render_create_challenge()
