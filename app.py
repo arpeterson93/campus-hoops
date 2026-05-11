@@ -34,55 +34,60 @@ def _find_save_root(extracted_dir: str) -> str:
     return extracted_dir
 
 
-with st.sidebar:
-    st.header("Save File")
-    uploaded = st.file_uploader("Upload save file (.campushoops or .zip)")
-
-    if not uploaded:
-        st.info("Upload your exported save file (.campushoops or .zip) to get started.")
-        st.stop()
-
-    if not zipfile.is_zipfile(uploaded):
-        st.error("That file doesn't appear to be a valid save export.")
-        st.stop()
-    uploaded.seek(0)
-
-    upload_key = f"{uploaded.name}_{uploaded.size}"
-    if st.session_state.get("upload_key") != upload_key:
-        old_dir = st.session_state.get("temp_dir")
-        if old_dir and os.path.exists(old_dir):
-            shutil.rmtree(old_dir, ignore_errors=True)
-
-        temp_dir = tempfile.mkdtemp()
-        with zipfile.ZipFile(uploaded) as zf:
-            zf.extractall(temp_dir)
-
-        save_root = _find_save_root(temp_dir)
-        st.session_state["upload_key"] = upload_key
-        st.session_state["temp_dir"] = temp_dir
-        st.session_state["save"] = SaveFile(save_root)
-        st.session_state.pop("pool", None)
-
-save: SaveFile = st.session_state["save"]
-
-with st.sidebar:
-    st.caption(
-        f"**{save.meta.get('teamName')}** — Season {save.meta.get('seasonYear')}\n\n"
-        f"Last saved: {save.meta.get('lastSaved', '')[:10]}"
-    )
-
-# ================================================================== page nav
+# ================================================================== page nav (always visible)
 
 page = st.sidebar.radio(
     "Page",
     ["Recruiting Pool", "Leaderboard", "Submit to Challenge", "Create Challenge"],
 )
 
+# ================================================================== save file upload (required only for some pages)
+
+SAVE_REQUIRED_PAGES = {"Recruiting Pool", "Submit to Challenge"}
+
+with st.sidebar:
+    st.header("Save File")
+    uploaded = st.file_uploader("Upload save file (.campushoops or .zip)")
+
+    if uploaded:
+        if not zipfile.is_zipfile(uploaded):
+            st.error("That file doesn't appear to be a valid save export.")
+            st.stop()
+        uploaded.seek(0)
+
+        upload_key = f"{uploaded.name}_{uploaded.size}"
+        if st.session_state.get("upload_key") != upload_key:
+            old_dir = st.session_state.get("temp_dir")
+            if old_dir and os.path.exists(old_dir):
+                shutil.rmtree(old_dir, ignore_errors=True)
+
+            temp_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(uploaded) as zf:
+                zf.extractall(temp_dir)
+
+            save_root = _find_save_root(temp_dir)
+            st.session_state["upload_key"] = upload_key
+            st.session_state["temp_dir"] = temp_dir
+            st.session_state["save"] = SaveFile(save_root)
+            st.session_state.pop("pool", None)
+
+    if "save" in st.session_state:
+        save: SaveFile = st.session_state["save"]
+        st.caption(
+            f"**{save.meta.get('teamName')}** — Season {save.meta.get('seasonYear')}\n\n"
+            f"Last saved: {save.meta.get('lastSaved', '')[:10]}"
+        )
+    elif page in SAVE_REQUIRED_PAGES:
+        st.info("Upload your save file (.campushoops or .zip) to use this page.")
+        st.stop()
+
 
 # ================================================================== Recruiting Pool
 
 def render_recruiting():
     st.header("Recruiting Pool")
+    save: SaveFile = st.session_state["save"]
+    upload_key = st.session_state["upload_key"]
 
     if "pool" not in st.session_state or st.session_state.get("pool_key") != upload_key:
         raw_pool = save.get("season.recruitingPool") or []
@@ -284,6 +289,7 @@ def render_leaderboard():
 
 def render_submit():
     st.header("Submit to Challenge")
+    save: SaveFile = st.session_state["save"]
     st.caption(
         f"Submitting save: **{save.meta.get('teamName')}** — "
         f"Season {save.meta.get('seasonYear')}"
