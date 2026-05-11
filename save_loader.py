@@ -32,7 +32,8 @@ class SaveFile:
         self.folder = Path(folder)
         self.meta: dict = self._load_json("meta.json")
         self.manifest: dict = self._load_json("manifest.json")
-        self._session: dict | None = None  # lazy-loaded; it's large
+        self._session: dict | None = None   # lazy-loaded; it's large
+        self._history: sqlite3.Connection | None = None  # lazy-loaded
 
         print(f"Loaded save: {self.meta.get('saveName')} — {self.meta.get('teamName')}")
         print(f"  Season: {self.meta.get('seasonYear')}  |  Format v{self.meta.get('saveFormatVersion')}")
@@ -305,13 +306,20 @@ class SaveFile:
 
     # ------------------------------------------------------------------ history DB
 
+    @property
+    def history(self) -> sqlite3.Connection:
+        """Cached connection to history.db."""
+        if self._history is None:
+            db_path = self.folder / "history.db"
+            if not db_path.exists():
+                raise FileNotFoundError("history.db not found in save folder")
+            self._history = sqlite3.connect(str(db_path), check_same_thread=False)
+            self._history.row_factory = sqlite3.Row
+        return self._history
+
     def history_db(self) -> sqlite3.Connection:
-        """Open the history.db SQLite database and return the connection."""
-        db_path = self.folder / "history.db"
-        if not db_path.exists():
-            raise FileNotFoundError("history.db not found in save folder")
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        """Open history.db and print table names. Use save.history for scripted access."""
+        conn = self.history
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         print("Tables:", [t["name"] for t in tables])
         return conn
