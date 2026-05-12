@@ -705,7 +705,6 @@ def _players_editor_fragment(page_key: str, selected: str):
         )
         st.session_state["page_edits"][page_key] = new_full
         _mark_dirty(page_key)
-        st.rerun(scope="fragment")
 
     c1, c2 = st.columns(2)
     with c1:
