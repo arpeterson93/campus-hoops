@@ -20,9 +20,11 @@ Usage in PyCharm Python console or a script:
 """
 
 import gzip
+import io
 import json
 import re
 import sqlite3
+import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -338,3 +340,58 @@ class SaveFile:
             json.dump(self._session, f)
         print(f"Saved to {out}")
         return out
+
+    # ------------------------------------------------------------------ modding
+
+    def set(self, path: str, value: Any) -> None:
+        """Set a value in session data at a dot-separated path."""
+        parts = path.split(".")
+        node = self.session  # ensures session is loaded
+        for part in parts[:-1]:
+            if isinstance(node, dict):
+                node = node[part]
+            elif isinstance(node, list):
+                node = node[int(part)]
+            else:
+                raise KeyError(f"Cannot navigate into {type(node).__name__} at '{part}'")
+        last = parts[-1]
+        if isinstance(node, dict):
+            node[last] = value
+        elif isinstance(node, list):
+            node[int(last)] = value
+        else:
+            raise KeyError(f"Cannot set on {type(node).__name__}")
+
+    def to_campushoops_bytes(self, source_zip_bytes: bytes) -> bytes:
+        """Repackage save as .campushoops (zip) bytes with the modified session.json.gz."""
+        if self._session is None:
+            raise RuntimeError("Session not loaded — nothing to export.")
+
+        # Serialize + gzip-compress the modified session
+        raw = json.dumps(self._session, separators=(",", ":")).encode("utf-8")
+        gz_buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=gz_buf, mode="wb") as gz:
+            gz.write(raw)
+        gz_bytes = gz_buf.getvalue()
+
+        # Detect folder prefix inside the source zip (e.g. "save_name/")
+        src = zipfile.ZipFile(io.BytesIO(source_zip_bytes), "r")
+        prefix = ""
+        for info in src.infolist():
+            if info.filename.endswith("meta.json"):
+                prefix = info.filename[: -len("meta.json")]
+                break
+
+        # Build the output zip, swapping in the new session
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+            for info in src.infolist():
+                # Skip any session.json variant (plain, gz, or directory)
+                parts = [p for p in info.filename.split("/") if p]
+                if any(p in ("session.json", "session.json.gz") for p in parts):
+                    continue
+                zout.writestr(info, src.read(info.filename))
+            zout.writestr(f"{prefix}session.json.gz", gz_bytes)
+
+        src.close()
+        return out.getvalue()
