@@ -197,7 +197,11 @@ def _teams_to_players_df(teams: list[dict]) -> pd.DataFrame:
                            ("smallForward", "ovr_SF"), ("powerForward", "ovr_PF"), ("center", "ovr_C")]:
                 row[cn] = _calc_overall(pk, p)
             rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # Enforce column order: _PLAYERS_DISPLAY_COLS first (all columns including computed),
+    # then internal-only columns at the end (dropped before showing the editor).
+    ordered = _PLAYERS_DISPLAY_COLS + ["_team_name", "_team_idx", "position"]
+    return df.reindex(columns=ordered)
 
 
 def _players_df_to_teams(teams: list[dict], df: pd.DataFrame) -> list[dict]:
