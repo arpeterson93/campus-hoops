@@ -671,6 +671,55 @@ def render_coaches():
 
 # ================================================================== Rosters
 
+
+@st.fragment
+def _players_editor_fragment(page_key: str, selected: str):
+    """Isolated fragment so stat edits rerun only this section, preserving page scroll."""
+    full_df = st.session_state["page_edits"][page_key]
+
+    if selected == "All Teams":
+        display_df = full_df
+    else:
+        display_df = full_df[full_df["_team_name"] == selected].copy()
+
+    st.caption(f"{len(display_df)} players" + ("" if selected == "All Teams" else f" on {selected}"))
+
+    edited_display = st.data_editor(
+        display_df.drop(columns=["_team_idx"], errors="ignore"),
+        column_config=_players_col_cfg(),
+        use_container_width=True,
+        num_rows="dynamic",
+        key=f"editor_players_{selected}",
+    )
+
+    if not edited_display.equals(display_df.drop(columns=["_team_idx"], errors="ignore")):
+        id_to_edit = edited_display.set_index("id").to_dict("index")
+        new_full = full_df.copy()
+        for idx, row in new_full.iterrows():
+            pid = row.get("id")
+            if pid and pid in id_to_edit:
+                for col, val in id_to_edit[pid].items():
+                    new_full.at[idx, col] = val
+        new_full["overallRating"] = new_full.apply(
+            lambda r: _calc_overall(r.get("position", ""), r.to_dict()), axis=1
+        )
+        st.session_state["page_edits"][page_key] = new_full
+        _mark_dirty(page_key)
+        st.rerun(scope="fragment")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fname = f"roster_{selected.replace(' ', '_')}.csv" if selected != "All Teams" else "all_players.csv"
+        _csv_download_btn(edited_display, fname)
+    with c2:
+        upload_key = f"csv_up_players_{selected}"
+        last_key = f"_csv_last_id_{upload_key}"
+        prev_last = st.session_state.get(last_key)
+        _csv_upload_widget(page_key, full_df, key=upload_key)
+        if st.session_state.get(last_key) != prev_last:
+            st.rerun(scope="fragment")
+
+
 def render_rosters():
     if "save" not in st.session_state:
         st.info("Upload a save file to use this page.")
@@ -699,47 +748,9 @@ def render_rosters():
         st.session_state["page_edits"][page_key] = full_df
 
     team_names = sorted(full_df["_team_name"].dropna().unique().tolist())
-    view_options = ["All Teams"] + team_names
-    selected = st.selectbox("Team", view_options)
+    selected = st.selectbox("Team", ["All Teams"] + team_names)
 
-    if selected == "All Teams":
-        display_df = full_df
-    else:
-        display_df = full_df[full_df["_team_name"] == selected].copy()
-
-    st.caption(f"{len(display_df)} players" + ("" if selected == "All Teams" else f" on {selected}"))
-
-    col_cfg = _players_col_cfg()
-
-    edited_display = st.data_editor(
-        display_df.drop(columns=["_team_idx"], errors="ignore"),
-        column_config=col_cfg,
-        use_container_width=True,
-        num_rows="dynamic",
-        key=f"editor_players_{selected}",
-    )
-
-    # Merge edits back into the full DataFrame
-    if not edited_display.equals(display_df.drop(columns=["_team_idx"], errors="ignore")):
-        id_to_edit = edited_display.set_index("id").to_dict("index")
-        new_full = full_df.copy()
-        for idx, row in new_full.iterrows():
-            pid = row.get("id")
-            if pid and pid in id_to_edit:
-                for col, val in id_to_edit[pid].items():
-                    new_full.at[idx, col] = val
-        new_full["overallRating"] = new_full.apply(
-            lambda r: _calc_overall(r.get("position", ""), r.to_dict()), axis=1
-        )
-        st.session_state["page_edits"][page_key] = new_full
-        _mark_dirty(page_key)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fname = f"roster_{selected.replace(' ', '_')}.csv" if selected != "All Teams" else "all_players.csv"
-        _csv_download_btn(edited_display, fname)
-    with c2:
-        _csv_upload_widget(page_key, full_df, key=f"csv_up_players_{selected}")
+    _players_editor_fragment(page_key, selected)
 
 
 # ================================================================== Teams
