@@ -674,25 +674,49 @@ def render_coaches():
 
 @st.fragment
 def _players_editor_fragment(page_key: str, selected: str):
-    """Isolated fragment so stat edits rerun only this section, preserving page scroll."""
+    """Isolated fragment so stat edits rerun only this section, preserving page scroll.
+
+    We pass a frozen base to data_editor so the component never receives new data
+    mid-session (which would reset table scroll). Edits accumulate as a delta on
+    top of the frozen base; OVR is recomputed in page_edits on every edit. The
+    frozen base resets (showing updated OVR) when switching teams or clicking ↺.
+    """
     full_df = st.session_state["page_edits"][page_key]
 
     if selected == "All Teams":
-        display_df = full_df
+        current_slice = full_df.drop(columns=["_team_idx"], errors="ignore").copy()
     else:
-        display_df = full_df[full_df["_team_name"] == selected].copy()
+        current_slice = (
+            full_df[full_df["_team_name"] == selected]
+            .drop(columns=["_team_idx"], errors="ignore")
+            .copy()
+        )
 
-    st.caption(f"{len(display_df)} players" + ("" if selected == "All Teams" else f" on {selected}"))
+    # Frozen base: initialised on first visit to this team selection, then held
+    # constant so the data_editor component never gets new props mid-edit.
+    base_key = f"_editor_base_{selected}"
+    if base_key not in st.session_state:
+        st.session_state[base_key] = current_slice
+
+    editor_base = st.session_state[base_key]
+
+    cap_col, btn_col = st.columns([12, 1])
+    cap_col.caption(
+        f"{len(current_slice)} players" + ("" if selected == "All Teams" else f" on {selected}")
+    )
+    if btn_col.button("↺", help="Refresh OVR column (resets table scroll)", key=f"refresh_ovr_{selected}"):
+        st.session_state[base_key] = current_slice
+        st.rerun(scope="fragment")
 
     edited_display = st.data_editor(
-        display_df.drop(columns=["_team_idx"], errors="ignore"),
+        editor_base,
         column_config=_players_col_cfg(),
         use_container_width=True,
         num_rows="dynamic",
         key=f"editor_players_{selected}",
     )
 
-    if not edited_display.equals(display_df.drop(columns=["_team_idx"], errors="ignore")):
+    if not edited_display.equals(editor_base):
         id_to_edit = edited_display.set_index("id").to_dict("index")
         new_full = full_df.copy()
         for idx, row in new_full.iterrows():
@@ -714,8 +738,9 @@ def _players_editor_fragment(page_key: str, selected: str):
         upload_key = f"csv_up_players_{selected}"
         last_key = f"_csv_last_id_{upload_key}"
         prev_last = st.session_state.get(last_key)
-        _csv_upload_widget(page_key, full_df, key=upload_key)
+        _csv_upload_widget(page_key, editor_base, key=upload_key)
         if st.session_state.get(last_key) != prev_last:
+            st.session_state.pop(base_key, None)
             st.rerun(scope="fragment")
 
 
