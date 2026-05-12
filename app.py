@@ -133,11 +133,10 @@ def _coaches_col_cfg() -> dict:
 # ================================================================== players
 
 _PLAYERS_DISPLAY_COLS = [
-    "_team_name",
-    "firstName", "lastName", "_pos", "year", "jerseyNumber",
+    "firstName", "lastName", "year", "jerseyNumber",
     "teamId", "homeState", "hometown", "highSchool",
     "height", "weight",
-    "overallRating", "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C", "potentialRating",
+    "_pos", "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C", "overallRating", "potentialRating",
     "insideShooting", "midRangeShooting", "outsideShooting",
     "handling", "passing", "rebounding",
     "perimeterDefense", "interiorDefense", "stealing", "blocking",
@@ -145,7 +144,7 @@ _PLAYERS_DISPLAY_COLS = [
     "isInjured", "isRedshirted", "hasUsedRedshirt", "draftProjection",
     "id",
 ]
-_PLAYERS_LOCKED = {"id", "teamId", "_team_name", "_team_idx", "overallRating",
+_PLAYERS_LOCKED = {"id", "teamId", "_team_idx", "overallRating",
                    "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C"}
 _POSITIONS = ["pointGuard", "shootingGuard", "smallForward", "powerForward", "center"]
 _POS_ABBR = {"pointGuard": "PG", "shootingGuard": "SG", "smallForward": "SF", "powerForward": "PF", "center": "C"}
@@ -186,7 +185,7 @@ _SKIP_COMPUTED = {"_team_name", "_team_idx", "_pos", "ovr_PG", "ovr_SG", "ovr_SF
 def _teams_to_players_df(teams: list[dict]) -> pd.DataFrame:
     rows = []
     for idx, team in enumerate(teams):
-        team_name = team.get("teamId") or team.get("id") or str(idx)
+        team_name = team.get("name") or team.get("teamId") or team.get("id") or str(idx)
         for p in (team.get("players") or []):
             row = {col: p.get(col) for col in _PLAYERS_DISPLAY_COLS if col not in _SKIP_COMPUTED}
             row["_team_name"] = team_name
@@ -232,7 +231,6 @@ def _players_df_to_teams(teams: list[dict], df: pd.DataFrame) -> list[dict]:
 def _players_col_cfg() -> dict:
     return {
         "id":              st.column_config.TextColumn("ID", disabled=True),
-        "_team_name":      st.column_config.TextColumn("Team", disabled=True),
         "teamId":          st.column_config.TextColumn("Team ID", disabled=True),
         "_pos":            st.column_config.SelectboxColumn("Pos", options=list(_POS_ABBR.values())),
         "year":            st.column_config.NumberColumn("Year", min_value=1, max_value=5),
@@ -297,9 +295,8 @@ _TEAMS_SCALAR_COLS = [
     "conference", "conferenceId", "isPowerConference",
     "offensiveScheme", "defensiveScheme",
     "prestige", "startingPrestige", "offenseRating", "defenseRating", "expectedWins",
-    "teamColor", "secondaryColor", "nilBudget", "isUserControlled", "coachId",
+    "teamColor", "secondaryColor", "nilBudget", "isUserControlled",
     "wins", "losses", "conferenceWins", "conferenceLosses",
-    "id",
 ]
 _TEAMS_LOCKED = {"id", "wins", "losses", "conferenceWins", "conferenceLosses"}
 
@@ -310,6 +307,8 @@ def _teams_to_df(teams: list[dict]) -> pd.DataFrame:
         row = {col: t.get(col) for col in _TEAMS_SCALAR_COLS}
         row["pipelineStates"] = ", ".join(t.get("pipelineStates") or [])
         row["rivalTeamIds"] = ", ".join(str(x) for x in (t.get("rivalTeamIds") or []))
+        row["id"] = t.get("id")
+        row["coachId"] = t.get("coachId")
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -341,6 +340,7 @@ def _teams_col_cfg(conference_options: list[str], coach_options: list[str]) -> d
     return {
         "id":               st.column_config.TextColumn("ID", disabled=True),
         "conference":       st.column_config.SelectboxColumn("Conference", options=conference_options),
+        "conferenceId":     st.column_config.TextColumn("Conf ID", disabled=True),
         "offensiveScheme":  st.column_config.SelectboxColumn("Off Scheme", options=off_schemes),
         "defensiveScheme":  st.column_config.SelectboxColumn("Def Scheme", options=def_schemes),
         "_coach_name":      st.column_config.SelectboxColumn("Coach", options=coach_options),
@@ -711,11 +711,11 @@ def _players_editor_fragment(page_key: str, selected: str):
     full_df = st.session_state["page_edits"][page_key]
 
     if selected == "All Teams":
-        current_slice = full_df.drop(columns=["_team_idx", "position"], errors="ignore").copy()
+        current_slice = full_df.drop(columns=["_team_idx", "_team_name", "position"], errors="ignore").copy()
     else:
         current_slice = (
             full_df[full_df["_team_name"] == selected]
-            .drop(columns=["_team_idx", "position"], errors="ignore")
+            .drop(columns=["_team_idx", "_team_name", "position"], errors="ignore")
             .copy()
         )
 
