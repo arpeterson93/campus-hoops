@@ -230,6 +230,72 @@ def _conferences_df_to_lists(df: pd.DataFrame) -> tuple[list, list]:
     return all_c, power_c
 
 
+# ================================================================== teams
+
+_TEAMS_SCALAR_COLS = [
+    "id", "name", "mascot", "abbreviation", "state",
+    "conference", "conferenceId", "isPowerConference",
+    "offensiveScheme", "defensiveScheme",
+    "prestige", "startingPrestige", "offenseRating", "defenseRating", "expectedWins",
+    "teamColor", "secondaryColor", "nilBudget", "isUserControlled", "coachId",
+    "wins", "losses", "conferenceWins", "conferenceLosses",
+]
+_TEAMS_LOCKED = {"id", "wins", "losses", "conferenceWins", "conferenceLosses"}
+
+
+def _teams_to_df(teams: list[dict]) -> pd.DataFrame:
+    rows = []
+    for t in teams:
+        row = {col: t.get(col) for col in _TEAMS_SCALAR_COLS}
+        row["pipelineStates"] = ", ".join(t.get("pipelineStates") or [])
+        row["rivalTeamIds"] = ", ".join(str(x) for x in (t.get("rivalTeamIds") or []))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _teams_df_to_list(raw: list[dict], df: pd.DataFrame) -> list[dict]:
+    edits = {row["id"]: row.to_dict() for _, row in df.iterrows()}
+    result = []
+    for t in raw:
+        tid = t.get("id", "")
+        if tid not in edits:
+            result.append(t)
+            continue
+        merged = dict(t)
+        edit = edits[tid]
+        for k, v in edit.items():
+            if k == "pipelineStates":
+                merged["pipelineStates"] = [s.strip() for s in str(v).split(",") if s.strip()] if v else []
+            elif k == "rivalTeamIds":
+                merged["rivalTeamIds"] = [s.strip() for s in str(v).split(",") if s.strip()] if v else []
+            elif k in merged and not isinstance(merged.get(k), (dict, list)):
+                merged[k] = _coerce_val(v, merged[k])
+        result.append(merged)
+    return result
+
+
+def _teams_col_cfg(conference_options: list[str]) -> dict:
+    off_schemes = ["drive", "motion", "highLow", "Princeton", "dribbleDrive", "postalUp", "spread"]
+    def_schemes = ["manToMan", "zone32", "zone23", "zone22", "matchup", "trapping"]
+    return {
+        "id":               st.column_config.TextColumn("ID", disabled=True),
+        "conference":       st.column_config.SelectboxColumn("Conference", options=conference_options),
+        "offensiveScheme":  st.column_config.SelectboxColumn("Off Scheme", options=off_schemes),
+        "defensiveScheme":  st.column_config.SelectboxColumn("Def Scheme", options=def_schemes),
+        "isPowerConference":st.column_config.CheckboxColumn("Power"),
+        "isUserControlled": st.column_config.CheckboxColumn("User"),
+        "prestige":         st.column_config.NumberColumn("Prestige", min_value=1, max_value=99),
+        "startingPrestige": st.column_config.NumberColumn("StartPres", min_value=1, max_value=99),
+        "offenseRating":    st.column_config.NumberColumn("OffRtg", min_value=1, max_value=99),
+        "defenseRating":    st.column_config.NumberColumn("DefRtg", min_value=1, max_value=99),
+        "expectedWins":     st.column_config.NumberColumn("ExpW", min_value=0, max_value=50),
+        "wins":             st.column_config.NumberColumn("W", disabled=True),
+        "losses":           st.column_config.NumberColumn("L", disabled=True),
+        "conferenceWins":   st.column_config.NumberColumn("CW", disabled=True),
+        "conferenceLosses": st.column_config.NumberColumn("CL", disabled=True),
+    }
+
+
 # ================================================================== download builder
 
 def _apply_all_edits(save: SaveFile):
@@ -237,18 +303,23 @@ def _apply_all_edits(save: SaveFile):
     edits = st.session_state.get("page_edits", {})
     raw = st.session_state.get("raw_data", {})
 
-    if "coaches" in edits and "coaches" in raw:
-        save.set("season.coaches", _coaches_df_to_list(raw["coaches"], edits["coaches"]))
-
-    if "players" in edits:
-        teams = save.get("season.teams") or []
-        updated_teams = _players_df_to_teams(teams, edits["players"])
-        save.set("season.teams", updated_teams)
-
+    # Apply conferences first so team conference dropdowns reference a valid list
     if "conferences" in edits:
         all_c, power_c = _conferences_df_to_lists(edits["conferences"])
         save.set("season.conferences", all_c)
         save.set("season.powerConferences", power_c)
+
+    # Teams and players both write to season.teams — apply together
+    if "teams" in edits or "players" in edits:
+        teams = save.get("season.teams") or []
+        if "teams" in edits and "teams" in raw:
+            teams = _teams_df_to_list(teams, edits["teams"])
+        if "players" in edits:
+            teams = _players_df_to_teams(teams, edits["players"])
+        save.set("season.teams", teams)
+
+    if "coaches" in edits and "coaches" in raw:
+        save.set("season.coaches", _coaches_df_to_list(raw["coaches"], edits["coaches"]))
 
     if "recruiting" in edits and "recruiting" in raw:
         edits_by_id = {row.get("id"): row.to_dict()
@@ -300,7 +371,7 @@ def _csv_upload_widget(page_key: str, reference_df: pd.DataFrame, key: str):
 
 page = st.sidebar.radio(
     "Page",
-    ["Recruiting Pool", "Coaches", "Rosters", "Conferences"],
+    ["Recruiting Pool", "Coaches", "Rosters", "Teams", "Conferences"],
 )
 
 with st.sidebar:
@@ -611,6 +682,71 @@ def render_rosters():
         _csv_upload_widget(page_key, full_df, key=f"csv_up_players_{selected}")
 
 
+# ================================================================== Teams
+
+def render_teams():
+    if "save" not in st.session_state:
+        st.info("Upload a save file to use this page.")
+        return
+
+    st.header("Teams")
+    save: SaveFile = st.session_state["save"]
+    page_key = "teams"
+
+    if page_key not in st.session_state.get("page_edits", {}):
+        raw = save.get("season.teams") or []
+        st.session_state.setdefault("raw_data", {})[page_key] = raw
+        st.session_state.setdefault("page_edits", {})[page_key] = _teams_to_df(raw)
+
+    current_df: pd.DataFrame = st.session_state["page_edits"][page_key]
+
+    # Use live conference list (may have been edited on Conferences page)
+    conf_edits = st.session_state.get("page_edits", {}).get("conferences")
+    if conf_edits is not None:
+        all_conferences = sorted(conf_edits["conference"].dropna().tolist())
+    else:
+        all_conferences = sorted(save.get("season.conferences") or [])
+
+    col_cfg = _teams_col_cfg(all_conferences)
+
+    conf_filter = st.selectbox("Filter by conference", ["All Teams"] + all_conferences)
+    if conf_filter != "All Teams":
+        display_df = current_df[current_df["conference"] == conf_filter].copy()
+    else:
+        display_df = current_df
+
+    st.caption(
+        f"{len(display_df)} team(s) shown — edit conference assignments, schemes, prestige, and colors."
+    )
+
+    edited = st.data_editor(
+        display_df,
+        column_config=col_cfg,
+        use_container_width=True,
+        num_rows="fixed",
+        key=f"editor_teams_{conf_filter}",
+    )
+
+    # Merge edits back into full DataFrame
+    if not edited.equals(display_df):
+        id_to_edit = edited.set_index("id").to_dict("index")
+        new_full = current_df.copy()
+        for idx, row in new_full.iterrows():
+            tid = row.get("id")
+            if tid and tid in id_to_edit:
+                for col, val in id_to_edit[tid].items():
+                    new_full.at[idx, col] = val
+        st.session_state["page_edits"][page_key] = new_full
+        _mark_dirty(page_key)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fname = f"teams_{conf_filter.replace(' ', '_')}.csv"
+        _csv_download_btn(edited, fname)
+    with c2:
+        _csv_upload_widget(page_key, current_df, key=f"csv_up_teams_{conf_filter}")
+
+
 # ================================================================== Conferences
 
 def render_conferences():
@@ -833,5 +969,7 @@ elif page == "Coaches":
     render_coaches()
 elif page == "Rosters":
     render_rosters()
+elif page == "Teams":
+    render_teams()
 elif page == "Conferences":
     render_conferences()
