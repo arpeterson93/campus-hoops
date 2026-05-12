@@ -5,6 +5,7 @@ Run with:
     streamlit run app.py
 """
 
+import datetime
 import io
 import math
 import os
@@ -133,10 +134,10 @@ def _coaches_col_cfg() -> dict:
 
 _PLAYERS_DISPLAY_COLS = [
     "_team_name",
-    "firstName", "lastName", "position", "year", "jerseyNumber",
+    "firstName", "lastName", "_pos", "year", "jerseyNumber",
     "teamId", "homeState", "hometown", "highSchool",
     "height", "weight",
-    "overallRating", "potentialRating",
+    "overallRating", "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C", "potentialRating",
     "insideShooting", "midRangeShooting", "outsideShooting",
     "handling", "passing", "rebounding",
     "perimeterDefense", "interiorDefense", "stealing", "blocking",
@@ -144,8 +145,11 @@ _PLAYERS_DISPLAY_COLS = [
     "isInjured", "isRedshirted", "hasUsedRedshirt", "draftProjection",
     "id",
 ]
-_PLAYERS_LOCKED = {"id", "teamId", "_team_name", "_team_idx", "overallRating"}
+_PLAYERS_LOCKED = {"id", "teamId", "_team_name", "_team_idx", "overallRating",
+                   "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C"}
 _POSITIONS = ["pointGuard", "shootingGuard", "smallForward", "powerForward", "center"]
+_POS_ABBR = {"pointGuard": "PG", "shootingGuard": "SG", "smallForward": "SF", "powerForward": "PF", "center": "C"}
+_POS_FULL  = {v: k for k, v in _POS_ABBR.items()}
 
 _OVERALL_WEIGHTS: dict[str, dict[str, float]] = {
     "pointGuard":    {"insideShooting": 0.06000, "midRangeShooting": 0.09177, "outsideShooting": 0.15249,
@@ -176,15 +180,23 @@ def _calc_overall(position: str, row: dict) -> int:
     return int(round(sum(w * float(row.get(s) or 0) for s, w in weights.items())))
 
 
+_SKIP_COMPUTED = {"_team_name", "_team_idx", "_pos", "ovr_PG", "ovr_SG", "ovr_SF", "ovr_PF", "ovr_C"}
+
+
 def _teams_to_players_df(teams: list[dict]) -> pd.DataFrame:
     rows = []
     for idx, team in enumerate(teams):
         team_name = team.get("teamId") or team.get("id") or str(idx)
         for p in (team.get("players") or []):
-            row = {col: p.get(col) for col in _PLAYERS_DISPLAY_COLS
-                   if col not in ("_team_name", "_team_idx")}
+            row = {col: p.get(col) for col in _PLAYERS_DISPLAY_COLS if col not in _SKIP_COMPUTED}
             row["_team_name"] = team_name
             row["_team_idx"] = idx
+            pos = p.get("position", "")
+            row["position"] = pos
+            row["_pos"] = _POS_ABBR.get(pos, "")
+            for pk, cn in [("pointGuard", "ovr_PG"), ("shootingGuard", "ovr_SG"),
+                           ("smallForward", "ovr_SF"), ("powerForward", "ovr_PF"), ("center", "ovr_C")]:
+                row[cn] = _calc_overall(pk, p)
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -219,28 +231,33 @@ def _players_df_to_teams(teams: list[dict], df: pd.DataFrame) -> list[dict]:
 
 def _players_col_cfg() -> dict:
     return {
-        "id":           st.column_config.TextColumn("ID", disabled=True),
-        "_team_name":   st.column_config.TextColumn("Team", disabled=True),
-        "teamId":       st.column_config.TextColumn("Team ID", disabled=True),
-        "position":     st.column_config.SelectboxColumn("Position", options=_POSITIONS),
-        "year":         st.column_config.NumberColumn("Year", min_value=1, max_value=5),
-        "height":       st.column_config.NumberColumn("Ht (in)", min_value=60, max_value=96),
-        "weight":       st.column_config.NumberColumn("Wt (lbs)", min_value=100, max_value=400),
-        "overallRating":       st.column_config.NumberColumn("OVR", min_value=0, max_value=99, disabled=True),
-        "potentialRating":     st.column_config.NumberColumn("POT", min_value=0, max_value=99),
-        "insideShooting":      st.column_config.NumberColumn("INS", min_value=0, max_value=99),
-        "midRangeShooting":    st.column_config.NumberColumn("MID", min_value=0, max_value=99),
-        "outsideShooting":     st.column_config.NumberColumn("OUT", min_value=0, max_value=99),
-        "handling":            st.column_config.NumberColumn("HND", min_value=0, max_value=99),
-        "passing":             st.column_config.NumberColumn("PAS", min_value=0, max_value=99),
-        "rebounding":          st.column_config.NumberColumn("REB", min_value=0, max_value=99),
-        "perimeterDefense":    st.column_config.NumberColumn("PDef", min_value=0, max_value=99),
-        "interiorDefense":     st.column_config.NumberColumn("IDef", min_value=0, max_value=99),
-        "stealing":            st.column_config.NumberColumn("STL", min_value=0, max_value=99),
-        "blocking":            st.column_config.NumberColumn("BLK", min_value=0, max_value=99),
-        "isInjured":           st.column_config.CheckboxColumn("Injured"),
-        "isRedshirted":        st.column_config.CheckboxColumn("RS"),
-        "hasUsedRedshirt":     st.column_config.CheckboxColumn("RS Used"),
+        "id":              st.column_config.TextColumn("ID", disabled=True),
+        "_team_name":      st.column_config.TextColumn("Team", disabled=True),
+        "teamId":          st.column_config.TextColumn("Team ID", disabled=True),
+        "_pos":            st.column_config.SelectboxColumn("Pos", options=list(_POS_ABBR.values())),
+        "year":            st.column_config.NumberColumn("Year", min_value=1, max_value=5),
+        "height":          st.column_config.NumberColumn("Ht (in)", min_value=60, max_value=96),
+        "weight":          st.column_config.NumberColumn("Wt (lbs)", min_value=100, max_value=400),
+        "overallRating":   st.column_config.NumberColumn("OVR", min_value=0, max_value=99, disabled=True),
+        "ovr_PG":          st.column_config.NumberColumn("PG OVR", disabled=True),
+        "ovr_SG":          st.column_config.NumberColumn("SG OVR", disabled=True),
+        "ovr_SF":          st.column_config.NumberColumn("SF OVR", disabled=True),
+        "ovr_PF":          st.column_config.NumberColumn("PF OVR", disabled=True),
+        "ovr_C":           st.column_config.NumberColumn("C OVR", disabled=True),
+        "potentialRating": st.column_config.NumberColumn("POT", min_value=0, max_value=99),
+        "insideShooting":  st.column_config.NumberColumn("INS", min_value=0, max_value=99),
+        "midRangeShooting":st.column_config.NumberColumn("MID", min_value=0, max_value=99),
+        "outsideShooting": st.column_config.NumberColumn("OUT", min_value=0, max_value=99),
+        "handling":        st.column_config.NumberColumn("HND", min_value=0, max_value=99),
+        "passing":         st.column_config.NumberColumn("PAS", min_value=0, max_value=99),
+        "rebounding":      st.column_config.NumberColumn("REB", min_value=0, max_value=99),
+        "perimeterDefense":st.column_config.NumberColumn("PDef", min_value=0, max_value=99),
+        "interiorDefense": st.column_config.NumberColumn("IDef", min_value=0, max_value=99),
+        "stealing":        st.column_config.NumberColumn("STL", min_value=0, max_value=99),
+        "blocking":        st.column_config.NumberColumn("BLK", min_value=0, max_value=99),
+        "isInjured":       st.column_config.CheckboxColumn("Injured"),
+        "isRedshirted":    st.column_config.CheckboxColumn("RS"),
+        "hasUsedRedshirt": st.column_config.CheckboxColumn("RS Used"),
     }
 
 
@@ -318,7 +335,7 @@ def _teams_df_to_list(raw: list[dict], df: pd.DataFrame) -> list[dict]:
     return result
 
 
-def _teams_col_cfg(conference_options: list[str]) -> dict:
+def _teams_col_cfg(conference_options: list[str], coach_options: list[str]) -> dict:
     off_schemes = ["drive", "motion", "highLow", "Princeton", "dribbleDrive", "postalUp", "spread"]
     def_schemes = ["manToMan", "zone32", "zone23", "zone22", "matchup", "trapping"]
     return {
@@ -326,6 +343,8 @@ def _teams_col_cfg(conference_options: list[str]) -> dict:
         "conference":       st.column_config.SelectboxColumn("Conference", options=conference_options),
         "offensiveScheme":  st.column_config.SelectboxColumn("Off Scheme", options=off_schemes),
         "defensiveScheme":  st.column_config.SelectboxColumn("Def Scheme", options=def_schemes),
+        "_coach_name":      st.column_config.SelectboxColumn("Coach", options=coach_options),
+        "coachId":          st.column_config.TextColumn("Coach ID", disabled=True),
         "isPowerConference":st.column_config.CheckboxColumn("Power"),
         "isUserControlled": st.column_config.CheckboxColumn("User"),
         "prestige":         st.column_config.NumberColumn("Prestige", min_value=1, max_value=99),
@@ -390,6 +409,14 @@ def _apply_all_edits(save: SaveFile):
             else:
                 result.append(r)
         save.set("season.recruitingPool", result)
+
+    modified_sections = sorted(k for k in ["conferences", "teams", "players", "coaches", "recruiting"] if k in edits)
+    if modified_sections:
+        save.set("_modded", {
+            "tool": "campus-hoops-mod-utility",
+            "modifiedSections": modified_sections,
+            "modifiedAt": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        })
 
 
 def _csv_download_btn(df: pd.DataFrame, filename: str, label: str = "Download CSV"):
@@ -684,11 +711,11 @@ def _players_editor_fragment(page_key: str, selected: str):
     full_df = st.session_state["page_edits"][page_key]
 
     if selected == "All Teams":
-        current_slice = full_df.drop(columns=["_team_idx"], errors="ignore").copy()
+        current_slice = full_df.drop(columns=["_team_idx", "position"], errors="ignore").copy()
     else:
         current_slice = (
             full_df[full_df["_team_name"] == selected]
-            .drop(columns=["_team_idx"], errors="ignore")
+            .drop(columns=["_team_idx", "position"], errors="ignore")
             .copy()
         )
 
@@ -724,6 +751,10 @@ def _players_editor_fragment(page_key: str, selected: str):
             if pid and pid in id_to_edit:
                 for col, val in id_to_edit[pid].items():
                     new_full.at[idx, col] = val
+        new_full["position"] = new_full["_pos"].map(_POS_FULL).fillna(new_full["position"])
+        for pk, cn in [("pointGuard", "ovr_PG"), ("shootingGuard", "ovr_SG"),
+                       ("smallForward", "ovr_SF"), ("powerForward", "ovr_PF"), ("center", "ovr_C")]:
+            new_full[cn] = new_full.apply(lambda r, p=pk: _calc_overall(p, r.to_dict()), axis=1)
         new_full["overallRating"] = new_full.apply(
             lambda r: _calc_overall(r.get("position", ""), r.to_dict()), axis=1
         )
@@ -795,6 +826,25 @@ def render_teams():
 
     current_df: pd.DataFrame = st.session_state["page_edits"][page_key]
 
+    # Build coach name ↔ id maps from live edits (or raw save data)
+    coaches_edits = st.session_state.get("page_edits", {}).get("coaches")
+    if coaches_edits is not None:
+        raw_coaches_list = coaches_edits.to_dict("records")
+    else:
+        raw_coaches_list = save.get("season.coaches") or []
+    coach_name_map = {
+        c.get("id", ""): f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+        for c in raw_coaches_list if c.get("id")
+    }
+    coach_id_map = {name: cid for cid, name in coach_name_map.items() if name}
+    coach_options = [""] + sorted(coach_id_map.keys())
+
+    # Add _coach_name display column if not yet present
+    if "_coach_name" not in current_df.columns:
+        current_df = current_df.copy()
+        current_df["_coach_name"] = current_df["coachId"].map(coach_name_map).fillna("")
+        st.session_state["page_edits"][page_key] = current_df
+
     # Use live conference list (may have been edited on Conferences page)
     conf_edits = st.session_state.get("page_edits", {}).get("conferences")
     if conf_edits is not None:
@@ -802,7 +852,7 @@ def render_teams():
     else:
         all_conferences = sorted(save.get("season.conferences") or [])
 
-    col_cfg = _teams_col_cfg(all_conferences)
+    col_cfg = _teams_col_cfg(all_conferences, coach_options)
 
     conf_filter = st.selectbox("Filter by conference", ["All Teams"] + all_conferences)
     if conf_filter != "All Teams":
@@ -831,6 +881,8 @@ def render_teams():
             if tid and tid in id_to_edit:
                 for col, val in id_to_edit[tid].items():
                     new_full.at[idx, col] = val
+        # Sync coachId from the coach name selectbox
+        new_full["coachId"] = new_full["_coach_name"].map(coach_id_map).fillna(new_full["coachId"])
         st.session_state["page_edits"][page_key] = new_full
         _mark_dirty(page_key)
 
