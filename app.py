@@ -23,8 +23,8 @@ from save_loader import SaveFile
 
 _profanity.load_censor_words()
 
-st.set_page_config(page_title="Campus Hoops Utility", layout="wide")
-st.title("Campus Hoops Utility")
+st.set_page_config(page_title="Campus Hoops Mod Utility", layout="wide")
+st.title("Campus Hoops Mod Utility")
 
 
 # ================================================================== helpers
@@ -71,7 +71,7 @@ def _coerce_val(new_val, original):
 # ================================================================== coaches
 
 _COACHES_DISPLAY_COLS = [
-    "id", "firstName", "lastName", "age", "experience", "almaMater",
+    "firstName", "lastName", "age", "experience", "almaMater",
     "offensivePreference", "defensivePreference",
     "coachPrestige", "offenseRating", "defenseRating", "recruitingRating", "developmentRating",
     "careerWins", "careerLosses", "championships", "conferenceChampionships",
@@ -83,6 +83,7 @@ _COACHES_DISPLAY_COLS = [
     "hairStyle", "facialHairStyle",
     "skinTone", "hairColor", "shirtColor", "tieColor",
     "coachingPoints",
+    "id",
 ]
 _COACHES_LOCKED = {"id"}
 
@@ -131,7 +132,7 @@ def _coaches_col_cfg() -> dict:
 # ================================================================== players
 
 _PLAYERS_DISPLAY_COLS = [
-    "id", "_team_name",
+    "_team_name",
     "firstName", "lastName", "position", "year", "jerseyNumber",
     "teamId", "homeState", "hometown", "highSchool",
     "height", "weight",
@@ -141,9 +142,38 @@ _PLAYERS_DISPLAY_COLS = [
     "perimeterDefense", "interiorDefense", "stealing", "blocking",
     "loyalty", "ambition", "playingTimeDesire", "homeAttachment", "morale",
     "isInjured", "isRedshirted", "hasUsedRedshirt", "draftProjection",
+    "id",
 ]
-_PLAYERS_LOCKED = {"id", "teamId", "_team_name", "_team_idx"}
+_PLAYERS_LOCKED = {"id", "teamId", "_team_name", "_team_idx", "overallRating"}
 _POSITIONS = ["pointGuard", "shootingGuard", "smallForward", "powerForward", "center"]
+
+_OVERALL_WEIGHTS: dict[str, dict[str, float]] = {
+    "pointGuard":    {"insideShooting": 0.06000, "midRangeShooting": 0.09177, "outsideShooting": 0.15249,
+                      "handling": 0.18166, "passing": 0.11590, "rebounding": 0.05474,
+                      "perimeterDefense": 0.14540, "interiorDefense": 0.03898,
+                      "stealing": 0.13874, "blocking": 0.02011},
+    "shootingGuard": {"insideShooting": 0.07861, "midRangeShooting": 0.11310, "outsideShooting": 0.16610,
+                      "handling": 0.10927, "passing": 0.08359, "rebounding": 0.08987,
+                      "perimeterDefense": 0.13850, "interiorDefense": 0.06549,
+                      "stealing": 0.10712, "blocking": 0.04920},
+    "smallForward":  {"insideShooting": 0.10165, "midRangeShooting": 0.10281, "outsideShooting": 0.09833,
+                      "handling": 0.10143, "passing": 0.10058, "rebounding": 0.09899,
+                      "perimeterDefense": 0.12965, "interiorDefense": 0.09719,
+                      "stealing": 0.09671, "blocking": 0.07663},
+    "powerForward":  {"insideShooting": 0.13298, "midRangeShooting": 0.09296, "outsideShooting": 0.06812,
+                      "handling": 0.04660, "passing": 0.11227, "rebounding": 0.16776,
+                      "perimeterDefense": 0.05282, "interiorDefense": 0.17282,
+                      "stealing": 0.04770, "blocking": 0.10691},
+    "center":        {"insideShooting": 0.16471, "midRangeShooting": 0.06129, "outsideShooting": 0.02221,
+                      "handling": 0.02046, "passing": 0.13663, "rebounding": 0.20500,
+                      "perimeterDefense": 0.02427, "interiorDefense": 0.18199,
+                      "stealing": 0.03286, "blocking": 0.15051},
+}
+
+
+def _calc_overall(position: str, row: dict) -> int:
+    weights = _OVERALL_WEIGHTS.get(position) or _OVERALL_WEIGHTS["smallForward"]
+    return int(round(sum(w * float(row.get(s) or 0) for s, w in weights.items())))
 
 
 def _teams_to_players_df(teams: list[dict]) -> pd.DataFrame:
@@ -196,7 +226,7 @@ def _players_col_cfg() -> dict:
         "year":         st.column_config.NumberColumn("Year", min_value=1, max_value=5),
         "height":       st.column_config.NumberColumn("Ht (in)", min_value=60, max_value=96),
         "weight":       st.column_config.NumberColumn("Wt (lbs)", min_value=100, max_value=400),
-        "overallRating":       st.column_config.NumberColumn("OVR", min_value=0, max_value=99),
+        "overallRating":       st.column_config.NumberColumn("OVR", min_value=0, max_value=99, disabled=True),
         "potentialRating":     st.column_config.NumberColumn("POT", min_value=0, max_value=99),
         "insideShooting":      st.column_config.NumberColumn("INS", min_value=0, max_value=99),
         "midRangeShooting":    st.column_config.NumberColumn("MID", min_value=0, max_value=99),
@@ -246,12 +276,13 @@ def _conferences_df_to_lists(df: pd.DataFrame) -> tuple[list, list, dict]:
 # ================================================================== teams
 
 _TEAMS_SCALAR_COLS = [
-    "id", "name", "mascot", "abbreviation", "state",
+    "name", "mascot", "abbreviation", "state",
     "conference", "conferenceId", "isPowerConference",
     "offensiveScheme", "defensiveScheme",
     "prestige", "startingPrestige", "offenseRating", "defenseRating", "expectedWins",
     "teamColor", "secondaryColor", "nilBudget", "isUserControlled", "coachId",
     "wins", "losses", "conferenceWins", "conferenceLosses",
+    "id",
 ]
 _TEAMS_LOCKED = {"id", "wins", "losses", "conferenceWins", "conferenceLosses"}
 
@@ -652,6 +683,9 @@ def render_rosters():
     if page_key not in st.session_state.get("page_edits", {}):
         teams = save.get("season.teams") or []
         full_df = _teams_to_players_df(teams)
+        full_df["overallRating"] = full_df.apply(
+            lambda r: _calc_overall(r.get("position", ""), r.to_dict()), axis=1
+        )
         st.session_state.setdefault("page_edits", {})[page_key] = full_df
 
     full_df: pd.DataFrame = st.session_state["page_edits"][page_key]
@@ -694,6 +728,9 @@ def render_rosters():
             if pid and pid in id_to_edit:
                 for col, val in id_to_edit[pid].items():
                     new_full.at[idx, col] = val
+        new_full["overallRating"] = new_full.apply(
+            lambda r: _calc_overall(r.get("position", ""), r.to_dict()), axis=1
+        )
         st.session_state["page_edits"][page_key] = new_full
         _mark_dirty(page_key)
 
