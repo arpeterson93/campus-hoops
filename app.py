@@ -216,18 +216,31 @@ def _players_col_cfg() -> dict:
 
 # ================================================================== conferences
 
-def _conferences_to_df(conferences: list, power_conferences: list) -> pd.DataFrame:
+def _conferences_to_df(conferences: list, power_conferences: list, teams: list | None = None) -> pd.DataFrame:
     power_set = set(power_conferences or [])
+    id_map: dict[str, str] = {}
+    for t in (teams or []):
+        conf_name = t.get("conference")
+        conf_id = t.get("conferenceId")
+        if conf_name and conf_id and conf_name not in id_map:
+            id_map[conf_name] = conf_id
     return pd.DataFrame([
-        {"conference": name, "is_power": name in power_set}
+        {"conference": name, "conferenceId": id_map.get(name, ""), "is_power": name in power_set}
         for name in (conferences or [])
     ])
 
 
-def _conferences_df_to_lists(df: pd.DataFrame) -> tuple[list, list]:
+def _conferences_df_to_lists(df: pd.DataFrame) -> tuple[list, list, dict]:
     all_c = df["conference"].tolist()
     power_c = df[df["is_power"] == True]["conference"].tolist()
-    return all_c, power_c
+    conf_id_map: dict[str, str] = {}
+    if "conferenceId" in df.columns:
+        conf_id_map = {
+            row["conference"]: row["conferenceId"]
+            for _, row in df.iterrows()
+            if row.get("conference") and row.get("conferenceId")
+        }
+    return all_c, power_c, conf_id_map
 
 
 # ================================================================== teams
@@ -304,8 +317,9 @@ def _apply_all_edits(save: SaveFile):
     raw = st.session_state.get("raw_data", {})
 
     # Apply conferences first so team conference dropdowns reference a valid list
+    conf_id_map: dict[str, str] = {}
     if "conferences" in edits:
-        all_c, power_c = _conferences_df_to_lists(edits["conferences"])
+        all_c, power_c, conf_id_map = _conferences_df_to_lists(edits["conferences"])
         save.set("season.conferences", all_c)
         save.set("season.powerConferences", power_c)
 
@@ -316,6 +330,15 @@ def _apply_all_edits(save: SaveFile):
             teams = _teams_df_to_list(teams, edits["teams"])
         if "players" in edits:
             teams = _players_df_to_teams(teams, edits["players"])
+        save.set("season.teams", teams)
+
+    # Propagate conferenceId changes last so they're authoritative over team-level edits
+    if conf_id_map:
+        teams = save.get("season.teams") or []
+        for team in teams:
+            conf_name = team.get("conference")
+            if conf_name and conf_name in conf_id_map:
+                team["conferenceId"] = conf_id_map[conf_name]
         save.set("season.teams", teams)
 
     if "coaches" in edits and "coaches" in raw:
@@ -761,15 +784,17 @@ def render_conferences():
     if page_key not in st.session_state.get("page_edits", {}):
         conferences = save.get("season.conferences") or []
         power = save.get("season.powerConferences") or []
-        df = _conferences_to_df(conferences, power)
+        teams = save.get("season.teams") or []
+        df = _conferences_to_df(conferences, power, teams)
         st.session_state.setdefault("page_edits", {})[page_key] = df
 
     current_df = st.session_state["page_edits"][page_key]
-    st.caption(f"{len(current_df)} conferences — edit names or toggle power conference status.")
+    st.caption(f"{len(current_df)} conferences — edit names, IDs, or toggle power conference status.")
 
     col_cfg = {
-        "conference": st.column_config.TextColumn("Conference Name"),
-        "is_power":   st.column_config.CheckboxColumn("Power Conference"),
+        "conference":   st.column_config.TextColumn("Conference Name"),
+        "conferenceId": st.column_config.TextColumn("Conference ID"),
+        "is_power":     st.column_config.CheckboxColumn("Power Conference"),
     }
 
     edited = st.data_editor(
