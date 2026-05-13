@@ -14,6 +14,7 @@ import tempfile
 import zipfile
 
 import pandas as pd
+import requests
 import streamlit as st
 from better_profanity import profanity as _profanity
 
@@ -456,7 +457,7 @@ def _csv_upload_widget(page_key: str, reference_df: pd.DataFrame, key: str):
 
 page = st.sidebar.radio(
     "Page",
-    ["Recruiting Pool", "Coaches", "Rosters", "Teams", "Conferences"],
+    ["Recruiting Pool", "Coaches", "Rosters", "Teams", "Conferences", "Data Pack"],
 )
 
 with st.sidebar:
@@ -1114,6 +1115,344 @@ def render_create_challenge():
             st.error(f"Failed to publish: {e}")
 
 
+# ================================================================== Data Pack
+
+_DP_TEAM_COLS = [
+    "id", "name", "mascot", "abbreviation", "conferenceId", "state", "pipelineStates",
+    "offenseRating", "defenseRating", "prestige", "primaryColor", "secondaryColor", "logoUrl",
+]
+_DP_CONF_COLS = ["id", "name", "abbreviation", "isPower", "prestigeFloor", "prestigeCeiling", "logoUrl"]
+
+
+def _dp_teams_to_df(teams: list[dict]) -> pd.DataFrame:
+    rows = []
+    for t in teams:
+        rows.append({
+            "id":             t.get("id", ""),
+            "name":           t.get("name", ""),
+            "mascot":         t.get("mascot", ""),
+            "abbreviation":   t.get("abbreviation", ""),
+            "conferenceId":   t.get("conferenceId", ""),
+            "state":          t.get("state", ""),
+            "pipelineStates": ", ".join(t.get("pipelineStates") or []),
+            "offenseRating":  t.get("offenseRating", 75),
+            "defenseRating":  t.get("defenseRating", 75),
+            "prestige":       t.get("prestige", 50),
+            "primaryColor":   t.get("primaryColor") or "",
+            "secondaryColor": t.get("secondaryColor") or "",
+            "logoUrl":        t.get("logoUrl") or "",
+        })
+    return pd.DataFrame(rows)
+
+
+def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
+    orig_by_id = {t.get("id"): t for t in original}
+    result = []
+    for _, row in df.iterrows():
+        tid = str(row.get("id", ""))
+        orig = orig_by_id.get(tid, {})
+        ps_raw = str(row.get("pipelineStates") or "")
+        result.append({
+            "id":             tid,
+            "name":           row.get("name", ""),
+            "mascot":         row.get("mascot", ""),
+            "abbreviation":   row.get("abbreviation", ""),
+            "conferenceId":   row.get("conferenceId", ""),
+            "primaryColor":   row.get("primaryColor") or orig.get("primaryColor"),
+            "secondaryColor": row.get("secondaryColor") or orig.get("secondaryColor"),
+            "offenseRating":  int(row.get("offenseRating") or 75),
+            "defenseRating":  int(row.get("defenseRating") or 75),
+            "prestige":       int(row.get("prestige") or 50),
+            "state":          row.get("state", ""),
+            "pipelineStates": [s.strip() for s in ps_raw.split(",") if s.strip()],
+            "logoUrl":        row.get("logoUrl") or orig.get("logoUrl"),
+        })
+    return result
+
+
+def _dp_confs_to_df(conferences: list[dict]) -> pd.DataFrame:
+    rows = []
+    for c in conferences:
+        rows.append({
+            "id":              c.get("id", ""),
+            "name":            c.get("name", ""),
+            "abbreviation":    c.get("abbreviation", ""),
+            "isPower":         bool(c.get("isPower", False)),
+            "prestigeFloor":   c.get("prestigeFloor", 35),
+            "prestigeCeiling": c.get("prestigeCeiling", 85),
+            "logoUrl":         c.get("logoUrl") or "",
+        })
+    return pd.DataFrame(rows)
+
+
+def _dp_df_to_confs(df: pd.DataFrame) -> list[dict]:
+    result = []
+    for _, row in df.iterrows():
+        result.append({
+            "id":              str(row.get("id", "")),
+            "name":            str(row.get("name", "")),
+            "abbreviation":    str(row.get("abbreviation", "")),
+            "isPower":         bool(row.get("isPower", False)),
+            "prestigeFloor":   int(row.get("prestigeFloor") or 35),
+            "prestigeCeiling": int(row.get("prestigeCeiling") or 85),
+            "logoUrl":         row.get("logoUrl") or None,
+        })
+    return result
+
+
+def _dp_csv_upload(state_key: str, reference_df: pd.DataFrame, upload_key: str):
+    """CSV uploader that writes directly into a dp_* session state key."""
+    uploaded_csv = st.file_uploader("Upload CSV to overwrite", type="csv", key=upload_key)
+    if uploaded_csv is not None:
+        file_id = f"{uploaded_csv.name}_{uploaded_csv.size}"
+        last_key = f"_csv_last_id_{upload_key}"
+        if st.session_state.get(last_key) != file_id:
+            try:
+                new_df = pd.read_csv(uploaded_csv)
+                for col in new_df.columns:
+                    if col in reference_df.columns:
+                        try:
+                            new_df[col] = new_df[col].astype(reference_df[col].dtype)
+                        except Exception:
+                            pass
+                st.session_state[state_key] = new_df
+                st.session_state[last_key] = file_id
+                st.success(f"Loaded {len(new_df)} rows from CSV.")
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+
+
+def _post_to_pastebin(content: str, api_key: str, title: str = "") -> str:
+    resp = requests.post("https://pastebin.com/api/api_post.php", data={
+        "api_dev_key":          api_key,
+        "api_option":           "paste",
+        "api_paste_code":       content,
+        "api_paste_name":       title,
+        "api_paste_format":     "json",
+        "api_paste_private":    "1",   # unlisted — accessible via URL, not searchable
+        "api_paste_expire_date":"N",   # never expire
+    }, timeout=15)
+    resp.raise_for_status()
+    result = resp.text.strip()
+    if result.startswith("Bad API request"):
+        raise ValueError(result)
+    return result
+
+
+def _dp_load(url_or_raw: str | None = None, file_bytes: bytes | None = None):
+    """Parse a data pack from a URL string or raw bytes; store into session state."""
+    if url_or_raw:
+        paste_id = url_or_raw.strip().rstrip("/").split("/")[-1]
+        raw_url = f"https://pastebin.com/raw/{paste_id}"
+        resp = requests.get(raw_url, timeout=10)
+        resp.raise_for_status()
+        data = json.loads(resp.text)
+    else:
+        data = json.loads(file_bytes.decode("utf-8"))
+    st.session_state["dp_raw"] = data
+    st.session_state.pop("dp_teams", None)
+    st.session_state.pop("dp_confs", None)
+    st.session_state.pop("dp_json_output", None)
+    st.session_state.pop("dp_paste_url", None)
+
+
+def render_data_pack():
+    st.header("Data Pack Editor")
+    st.caption(
+        "Import a data pack from Pastebin, edit teams and conferences, "
+        "then post the updated pack back to Pastebin and drop the URL into Campus Hoops."
+    )
+
+    # ------------------------------------------------------------------ 1. Import
+    with st.expander("1 · Import", expanded="dp_raw" not in st.session_state):
+        col_url, col_btn = st.columns([5, 1])
+        url_input = col_url.text_input(
+            "Pastebin URL", placeholder="https://pastebin.com/abc123",
+            label_visibility="collapsed", key="dp_url_input",
+        )
+        if col_btn.button("Fetch", use_container_width=True):
+            if url_input.strip():
+                try:
+                    _dp_load(url_or_raw=url_input.strip())
+                    st.success(
+                        f"Loaded: **{st.session_state['dp_raw'].get('meta', {}).get('name', 'data pack')}**"
+                    )
+                except Exception as e:
+                    st.error(f"Could not fetch: {e}")
+            else:
+                st.warning("Enter a Pastebin URL first.")
+
+        st.caption("— or —")
+        uploaded_json = st.file_uploader("Upload JSON file", type="json", key="dp_json_upload")
+        if uploaded_json is not None:
+            file_id = f"{uploaded_json.name}_{uploaded_json.size}"
+            if st.session_state.get("dp_upload_id") != file_id:
+                try:
+                    _dp_load(file_bytes=uploaded_json.read())
+                    st.session_state["dp_upload_id"] = file_id
+                    st.success(
+                        f"Loaded: **{st.session_state['dp_raw'].get('meta', {}).get('name', 'data pack')}**"
+                    )
+                except Exception as e:
+                    st.error(f"Could not parse JSON: {e}")
+
+    if "dp_raw" not in st.session_state:
+        return
+
+    raw: dict = st.session_state["dp_raw"]
+
+    # Show loaded pack summary
+    meta = raw.get("meta", {})
+    st.info(
+        f"**{meta.get('name', '—')}** · v{meta.get('version', 1)} · by {meta.get('author', '—')}  \n"
+        f"{meta.get('description', '')}"
+    )
+
+    # Lazy-init editable DataFrames
+    if "dp_confs" not in st.session_state:
+        st.session_state["dp_confs"] = _dp_confs_to_df(raw.get("conferences", []))
+    if "dp_teams" not in st.session_state:
+        st.session_state["dp_teams"] = _dp_teams_to_df(raw.get("teams", []))
+
+    # ------------------------------------------------------------------ 2. Edit
+    st.subheader("2 · Edit")
+    tab_meta, tab_confs, tab_teams = st.tabs(["Meta", "Conferences", "Teams"])
+
+    with tab_meta:
+        new_name    = st.text_input("Pack name",    value=meta.get("name", ""))
+        new_author  = st.text_input("Author",       value=meta.get("author", ""))
+        new_version = st.number_input("Version", value=int(meta.get("version", 1)), min_value=1, step=1)
+        new_desc    = st.text_area("Description",   value=meta.get("description", ""), height=80)
+        if st.button("Save meta changes"):
+            st.session_state["dp_raw"] = {
+                **raw,
+                "meta": {
+                    "name": new_name, "author": new_author,
+                    "version": new_version, "description": new_desc,
+                },
+            }
+            st.success("Meta updated.")
+
+    with tab_confs:
+        confs_df = st.session_state["dp_confs"]
+        st.caption(f"{len(confs_df)} conferences")
+        conf_col_cfg = {
+            "id":              st.column_config.TextColumn("ID"),
+            "isPower":         st.column_config.CheckboxColumn("Power"),
+            "prestigeFloor":   st.column_config.NumberColumn("Pres Floor",   min_value=1, max_value=99),
+            "prestigeCeiling": st.column_config.NumberColumn("Pres Ceiling", min_value=1, max_value=99),
+            "logoUrl":         st.column_config.LinkColumn("Logo URL", display_text="link"),
+        }
+        edited_confs = st.data_editor(
+            confs_df, column_config=conf_col_cfg,
+            use_container_width=True, num_rows="dynamic", key="dp_confs_editor",
+        )
+        if not edited_confs.equals(confs_df):
+            st.session_state["dp_confs"] = edited_confs
+
+        c1, c2 = st.columns(2)
+        with c1:
+            _csv_download_btn(edited_confs, "datapack_conferences.csv")
+        with c2:
+            _dp_csv_upload("dp_confs", confs_df, "dp_csv_confs")
+
+    with tab_teams:
+        teams_df  = st.session_state["dp_teams"]
+        conf_ids  = [""] + sorted(st.session_state["dp_confs"]["id"].dropna().tolist())
+        us_states = [
+            "", "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+            "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM",
+            "NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA",
+            "WV","WI","WY","DC",
+        ]
+        teams_col_cfg = {
+            "id":             st.column_config.TextColumn("ID"),
+            "conferenceId":   st.column_config.SelectboxColumn("Conference", options=conf_ids),
+            "state":          st.column_config.SelectboxColumn("State",      options=us_states),
+            "offenseRating":  st.column_config.NumberColumn("Off Rtg",  min_value=1, max_value=99),
+            "defenseRating":  st.column_config.NumberColumn("Def Rtg",  min_value=1, max_value=99),
+            "prestige":       st.column_config.NumberColumn("Prestige", min_value=1, max_value=99),
+            "primaryColor":   st.column_config.TextColumn("Primary"),
+            "secondaryColor": st.column_config.TextColumn("Secondary"),
+            "logoUrl":        st.column_config.LinkColumn("Logo URL", display_text="link"),
+        }
+
+        conf_filter = st.selectbox(
+            "Filter by conference",
+            ["All"] + sorted(teams_df["conferenceId"].dropna().unique().tolist()),
+            key="dp_teams_conf_filter",
+        )
+        display_teams = (
+            teams_df[teams_df["conferenceId"] == conf_filter].copy()
+            if conf_filter != "All" else teams_df
+        )
+        st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
+
+        edited_teams = st.data_editor(
+            display_teams, column_config=teams_col_cfg,
+            use_container_width=True, num_rows="dynamic",
+            key=f"dp_teams_editor_{conf_filter}",
+        )
+        if not edited_teams.equals(display_teams):
+            id_to_edit = edited_teams.set_index("id").to_dict("index")
+            new_full = teams_df.copy()
+            for idx, row in new_full.iterrows():
+                tid = row.get("id")
+                if tid and tid in id_to_edit:
+                    for col, val in id_to_edit[tid].items():
+                        new_full.at[idx, col] = val
+            st.session_state["dp_teams"] = new_full
+
+        c1, c2 = st.columns(2)
+        with c1:
+            _csv_download_btn(edited_teams, f"datapack_teams_{conf_filter}.csv")
+        with c2:
+            _dp_csv_upload("dp_teams", teams_df, f"dp_csv_teams_{conf_filter}")
+
+    # ------------------------------------------------------------------ 3. Export
+    st.subheader("3 · Export")
+
+    if st.button("Build JSON", type="primary"):
+        output = dict(raw)
+        output["conferences"] = _dp_df_to_confs(st.session_state["dp_confs"])
+        output["teams"]       = _dp_df_to_teams(st.session_state["dp_teams"], raw.get("teams", []))
+        st.session_state["dp_json_output"] = json.dumps(output, indent=2)
+        st.session_state.pop("dp_paste_url", None)
+
+    if "dp_json_output" not in st.session_state:
+        return
+
+    json_str = st.session_state["dp_json_output"]
+    st.caption(f"{len(json_str):,} characters — copy button is in the top-right of the code block")
+    st.code(json_str, language="json")
+
+    st.divider()
+    st.subheader("Post to Pastebin")
+    st.caption(
+        "Get a free API key at [pastebin.com/api](https://pastebin.com/api). "
+        "The paste will be unlisted (accessible via URL, not listed publicly)."
+    )
+
+    api_key = st.text_input(
+        "Pastebin API key", type="password", key="dp_pastebin_key",
+        placeholder="Your dev key from pastebin.com/api",
+    )
+    pack_title = st.session_state["dp_raw"].get("meta", {}).get("name", "Campus Hoops data pack")
+
+    if st.button("Post to Pastebin →", disabled=not api_key.strip(), type="primary"):
+        with st.spinner("Posting…"):
+            try:
+                paste_url = _post_to_pastebin(json_str, api_key.strip(), title=pack_title)
+                st.session_state["dp_paste_url"] = paste_url
+            except Exception as e:
+                st.error(f"Pastebin error: {e}")
+
+    if "dp_paste_url" in st.session_state:
+        paste_url = st.session_state["dp_paste_url"]
+        st.success("Posted! Copy this URL into Campus Hoops to load your data pack:")
+        st.code(paste_url)
+
+
 # ================================================================== router
 
 if page == "Recruiting Pool":
@@ -1126,3 +1465,5 @@ elif page == "Teams":
     render_teams()
 elif page == "Conferences":
     render_conferences()
+elif page == "Data Pack":
+    render_data_pack()
