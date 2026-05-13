@@ -12,6 +12,16 @@ saint_francis_pa_*/
 session.json/
 session_modified.json
 
+# Streamlit secrets (never commit credentials)
+.streamlit/secrets.toml
+
+# Scraper cache and generated packs (large, reproducible)
+.scrape_cache/
+hs_packs/
+
+# Claude Code memory (personal)
+.claude/
+
 # OS
 Thumbs.db
 .DS_Store

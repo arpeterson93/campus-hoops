@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from better_profanity import profanity as _profanity
+from PIL import Image, ImageDraw
 
 import database as db
 import verifier as vf
@@ -31,6 +32,16 @@ st.title("Campus Hoops Mod Utility")
 
 
 # ================================================================== helpers
+
+def _remove_white_bg(png_bytes: bytes, tolerance: int = 30) -> bytes:
+    """Flood-fill from all four corners to remove connected white/near-white background."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    for corner in [(0, 0), (img.width - 1, 0), (0, img.height - 1), (img.width - 1, img.height - 1)]:
+        ImageDraw.floodfill(img, corner, (0, 0, 0, 0), thresh=tolerance)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
 
 def _is_clean(text: str) -> bool:
     return not _profanity.contains_profanity(text)
@@ -951,11 +962,16 @@ def render_teams():
                     st.caption("No logo")
 
             with col_up:
+                remove_bg = st.checkbox(
+                    "Remove white background", value=True, key=f"logo_rmbg_{selected_logo_tid}",
+                    help="Flood-fills from the image corners to make the white background transparent.",
+                )
                 uploaded_logo = st.file_uploader(
                     "Upload PNG", type=["png"], key=f"logo_up_{selected_logo_tid}",
                 )
                 if uploaded_logo is not None:
-                    logo_edits[selected_logo_tid] = uploaded_logo.getvalue()
+                    raw_bytes = uploaded_logo.getvalue()
+                    logo_edits[selected_logo_tid] = _remove_white_bg(raw_bytes) if remove_bg else raw_bytes
                     st.session_state["logo_edits"] = logo_edits
                 if selected_logo_tid in logo_edits:
                     if st.button("Remove staged logo", key=f"logo_rm_{selected_logo_tid}"):
@@ -1257,6 +1273,37 @@ def _dp_confs_to_df(conferences: list[dict]) -> pd.DataFrame:
             "logoUrl":          c.get("logoUrl") or "",
         })
     return pd.DataFrame(rows)
+
+
+def _dp_recalc_conf_prestige(confs_df: pd.DataFrame, teams_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalculate prestigeFloor and prestigeCeiling for each conference based on
+    the current prestige values of its teams.
+
+    Floor   = ROUND(MAX(15,  70% * min_prestige) / 5, 0) * 5
+    Ceiling = ROUND(MIN(95, 115% * max_prestige) / 5, 0) * 5
+    """
+    if "conferenceId" not in teams_df.columns or "prestige" not in teams_df.columns:
+        return confs_df
+
+    pres = pd.to_numeric(teams_df["prestige"], errors="coerce")
+    tmp  = teams_df[["conferenceId"]].copy()
+    tmp["prestige"] = pres
+    stats = (
+        tmp.dropna(subset=["conferenceId", "prestige"])
+        .groupby("conferenceId")["prestige"]
+        .agg(["min", "max"])
+    )
+
+    df = confs_df.copy()
+    for idx, row in df.iterrows():
+        cid = row.get("id")
+        if cid and cid in stats.index:
+            mn = stats.loc[cid, "min"]
+            mx = stats.loc[cid, "max"]
+            df.at[idx, "prestigeFloor"]   = int(round(max(15, 0.70 * mn) / 5) * 5)
+            df.at[idx, "prestigeCeiling"] = int(round(min(95, 1.15 * mx) / 5) * 5)
+    return df
 
 
 def _dp_df_to_confs(df: pd.DataFrame) -> list[dict]:
@@ -1609,6 +1656,14 @@ def render_data_pack():
             st.success("Rules updated.")
 
     with tab_confs:
+        # Recalculate floor/ceiling from current team prestiges on every visit
+        _recalced = _dp_recalc_conf_prestige(
+            st.session_state["dp_confs"], st.session_state["dp_teams"]
+        )
+        if not _recalced.equals(st.session_state["dp_confs"]):
+            st.session_state["dp_confs"] = _recalced
+            st.session_state.pop("_dp_confs_base", None)
+
         confs_df = st.session_state["dp_confs"]
         st.caption(f"{len(confs_df)} conferences")
         _max_games = raw.get("rules", {}).get("schedule", {}).get("gamesPerTeam")
@@ -1734,9 +1789,9 @@ def render_data_pack():
 
     if st.button("Build JSON", type="primary"):
         output = dict(raw)
-        confs_sorted = st.session_state["dp_confs"].sort_values(
-            "name", key=lambda s: s.str.lower(), na_position="last"
-        )
+        confs_sorted = _dp_recalc_conf_prestige(
+            st.session_state["dp_confs"], st.session_state["dp_teams"]
+        ).sort_values("name", key=lambda s: s.str.lower(), na_position="last")
         output["conferences"] = _dp_df_to_confs(confs_sorted)
         conf_id_to_name_export = confs_sorted.set_index("id")["name"].to_dict()
         teams_export = st.session_state["dp_teams"].copy()

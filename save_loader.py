@@ -362,8 +362,15 @@ class SaveFile:
         else:
             raise KeyError(f"Cannot set on {type(node).__name__}")
 
-    def to_campushoops_bytes(self, source_zip_bytes: bytes) -> bytes:
-        """Repackage save as .campushoops (zip) bytes with the modified session.json.gz."""
+    def to_campushoops_bytes(
+        self,
+        source_zip_bytes: bytes,
+        logo_overrides: dict[str, bytes] | None = None,
+    ) -> bytes:
+        """Repackage save as .campushoops (zip) bytes with the modified session.json.gz.
+
+        logo_overrides: team_id -> PNG bytes; replaces or adds logos/{team_id}.png.
+        """
         if self._session is None:
             raise RuntimeError("Session not loaded — nothing to export.")
 
@@ -382,16 +389,25 @@ class SaveFile:
                 prefix = info.filename[: -len("meta.json")]
                 break
 
-        # Build the output zip, swapping in the new session
+        # Paths being replaced by logo_overrides — skip originals
+        override_paths: set[str] = set()
+        if logo_overrides:
+            override_paths = {f"{prefix}logos/{tid}.png" for tid in logo_overrides}
+
+        # Build the output zip, swapping in the new session and any logo overrides
         out = io.BytesIO()
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
             for info in src.infolist():
-                # Skip any session.json variant (plain, gz, or directory)
                 parts = [p for p in info.filename.split("/") if p]
                 if any(p in ("session.json", "session.json.gz") for p in parts):
                     continue
+                if info.filename in override_paths:
+                    continue
                 zout.writestr(info, src.read(info.filename))
             zout.writestr(f"{prefix}session.json.gz", gz_bytes)
+            if logo_overrides:
+                for tid, png_bytes in logo_overrides.items():
+                    zout.writestr(f"{prefix}logos/{tid}.png", png_bytes)
 
         src.close()
         return out.getvalue()
