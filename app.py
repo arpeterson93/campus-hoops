@@ -1174,14 +1174,17 @@ def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
 def _dp_confs_to_df(conferences: list[dict]) -> pd.DataFrame:
     rows = []
     for c in conferences:
+        cg = c.get("conferenceGames")
         rows.append({
-            "id":              c.get("id", ""),
-            "name":            c.get("name", ""),
-            "abbreviation":    c.get("abbreviation", ""),
-            "isPower":         bool(c.get("isPower", False)),
-            "prestigeFloor":   c.get("prestigeFloor", 35),
-            "prestigeCeiling": c.get("prestigeCeiling", 85),
-            "logoUrl":         c.get("logoUrl") or "",
+            "id":               c.get("id", ""),
+            "name":             c.get("name", ""),
+            "abbreviation":     c.get("abbreviation", ""),
+            "isPower":          bool(c.get("isPower", False)),
+            "hasTournament":    bool(c.get("hasTournament", True)),
+            "conferenceGames":  int(cg) if cg is not None else None,
+            "prestigeFloor":    c.get("prestigeFloor", 35),
+            "prestigeCeiling":  c.get("prestigeCeiling", 85),
+            "logoUrl":          c.get("logoUrl") or "",
         })
     return pd.DataFrame(rows)
 
@@ -1189,11 +1192,14 @@ def _dp_confs_to_df(conferences: list[dict]) -> pd.DataFrame:
 def _dp_df_to_confs(df: pd.DataFrame) -> list[dict]:
     result = []
     for _, row in df.iterrows():
+        cg = row.get("conferenceGames")
         result.append({
             "id":              str(row.get("id", "")),
             "name":            str(row.get("name", "")),
             "abbreviation":    str(row.get("abbreviation", "")),
             "isPower":         bool(row.get("isPower", False)),
+            "hasTournament":   bool(row.get("hasTournament", True)),
+            "conferenceGames": int(cg) if pd.notna(cg) and cg is not None else None,
             "prestigeFloor":   int(row.get("prestigeFloor") or 35),
             "prestigeCeiling": int(row.get("prestigeCeiling") or 85),
             "logoUrl":         row.get("logoUrl") or None,
@@ -1534,12 +1540,18 @@ def render_data_pack():
     with tab_confs:
         confs_df = st.session_state["dp_confs"]
         st.caption(f"{len(confs_df)} conferences")
+        _max_games = raw.get("rules", {}).get("schedule", {}).get("gamesPerTeam")
         conf_col_cfg = {
-            "id":              st.column_config.TextColumn("ID"),
-            "isPower":         st.column_config.CheckboxColumn("Power"),
-            "prestigeFloor":   st.column_config.NumberColumn("Pres Floor",   min_value=1, max_value=99),
-            "prestigeCeiling": st.column_config.NumberColumn("Pres Ceiling", min_value=1, max_value=99),
-            "logoUrl":         st.column_config.LinkColumn("Logo URL", display_text="link"),
+            "id":               st.column_config.TextColumn("ID"),
+            "isPower":          st.column_config.CheckboxColumn("Power"),
+            "hasTournament":    st.column_config.CheckboxColumn("Tournament"),
+            "conferenceGames":  st.column_config.NumberColumn(
+                "Conf Games", min_value=1,
+                **( {"max_value": int(_max_games)} if _max_games else {} ),
+            ),
+            "prestigeFloor":    st.column_config.NumberColumn("Pres Floor",   min_value=1, max_value=99),
+            "prestigeCeiling":  st.column_config.NumberColumn("Pres Ceiling", min_value=1, max_value=99),
+            "logoUrl":          st.column_config.LinkColumn("Logo URL", display_text="link"),
         }
         edited_confs = st.data_editor(
             confs_df, column_config=conf_col_cfg,
