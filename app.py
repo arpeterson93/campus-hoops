@@ -1597,22 +1597,31 @@ def render_data_pack():
         else:
             filter_id = "All"
             display_teams = teams_df
-        st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
-
-        # Drop conferenceId from display (deduced from _conf_name at JSON build time)
-        # and move _conf_name immediately before state
+        # Drop conferenceId from display and move _conf_name before state
         _dt_cols = [c for c in display_teams.columns if c != "conferenceId"]
         if "_conf_name" in _dt_cols and "state" in _dt_cols:
             _dt_cols.remove("_conf_name")
             _dt_cols.insert(_dt_cols.index("state"), "_conf_name")
         display_teams = display_teams[_dt_cols]
 
+        # Frozen base pattern — same fix as Rosters: always pass a stable DataFrame
+        # to data_editor so its React component never receives new props mid-edit.
+        base_key = f"_dp_teams_base_{filter_id}"
+        if base_key not in st.session_state:
+            st.session_state[base_key] = display_teams.copy()
+        editor_base = st.session_state[base_key]
+
+        cap_col, btn_col = st.columns([12, 1])
+        cap_col.caption(f"{len(display_teams)} of {len(teams_df)} teams")
+        if btn_col.button("↺", help="Refresh table", key=f"dp_refresh_{filter_id}"):
+            st.session_state[base_key] = display_teams.copy()
+
         edited_teams = st.data_editor(
-            display_teams, column_config=teams_col_cfg,
+            editor_base, column_config=teams_col_cfg,
             use_container_width=True, num_rows="dynamic",
             key=f"dp_teams_editor_{filter_id}",
         )
-        if not edited_teams.equals(display_teams):
+        if not edited_teams.equals(editor_base):
             id_to_edit = edited_teams.set_index("id").to_dict("index")
             new_full = teams_df.copy()
             for idx, row in new_full.iterrows():
@@ -1620,7 +1629,6 @@ def render_data_pack():
                 if tid and tid in id_to_edit:
                     for col, val in id_to_edit[tid].items():
                         new_full.at[idx, col] = val
-            # Sync conferenceId from the name selectbox
             new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
             st.session_state["dp_teams"] = new_full
 
@@ -1628,7 +1636,10 @@ def render_data_pack():
         with c1:
             _csv_download_btn(edited_teams, f"datapack_teams_{filter_id}.csv")
         with c2:
+            prev_last = st.session_state.get(f"_csv_last_id_dp_csv_teams_{filter_id}")
             _dp_csv_upload("dp_teams", teams_df, f"dp_csv_teams_{filter_id}")
+            if st.session_state.get(f"_csv_last_id_dp_csv_teams_{filter_id}") != prev_last:
+                st.session_state.pop(base_key, None)
 
     # ------------------------------------------------------------------ 3. Export
     st.subheader("3 · Export")
