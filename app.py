@@ -1611,10 +1611,7 @@ def render_data_pack():
             st.session_state[base_key] = display_teams.copy()
         editor_base = st.session_state[base_key]
 
-        cap_col, btn_col = st.columns([12, 1])
-        cap_col.caption(f"{len(display_teams)} of {len(teams_df)} teams")
-        if btn_col.button("↺", help="Refresh table", key=f"dp_refresh_{filter_id}"):
-            st.session_state[base_key] = display_teams.copy()
+        st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
 
         edited_teams = st.data_editor(
             editor_base, column_config=teams_col_cfg,
@@ -1660,29 +1657,31 @@ def render_data_pack():
 
     st.divider()
     st.subheader("Post to Pastebin")
-    st.caption(
-        "Get a free API key at [pastebin.com/api](https://pastebin.com/api). "
-        "The paste will be unlisted (accessible via URL, not listed publicly)."
-    )
 
-    api_key = st.text_input(
-        "Pastebin API key", type="password", key="dp_pastebin_key",
-        placeholder="Your dev key from pastebin.com/api",
-    )
+    # Use site-level key from Streamlit secrets or env var; fall back to user input.
+    _site_key = st.secrets.get("PASTEBIN_API_KEY", "") or os.environ.get("PASTEBIN_API_KEY", "")
+    if _site_key:
+        api_key = _site_key
+    else:
+        st.caption("No site key configured — enter your own from [pastebin.com/api](https://pastebin.com/api).")
+        api_key = st.text_input(
+            "Pastebin API key", type="password", key="dp_pastebin_key",
+            placeholder="Your dev key from pastebin.com/api",
+        )
+
     pack_title = st.session_state["dp_raw"].get("meta", {}).get("name", "Campus Hoops data pack")
 
-    if st.button("Post to Pastebin →", disabled=not api_key.strip(), type="primary"):
+    if st.button("Post to Pastebin →", disabled=not api_key, type="primary"):
         with st.spinner("Posting…"):
             try:
-                paste_url = _post_to_pastebin(json_str, api_key.strip(), title=pack_title)
+                paste_url = _post_to_pastebin(json_str, api_key, title=pack_title)
                 st.session_state["dp_paste_url"] = paste_url
             except Exception as e:
                 st.error(f"Pastebin error: {e}")
 
     if "dp_paste_url" in st.session_state:
-        paste_url = st.session_state["dp_paste_url"]
         st.success("Posted! Copy this URL into Campus Hoops to load your data pack:")
-        st.code(paste_url)
+        st.code(st.session_state["dp_paste_url"])
 
 
 # ================================================================== router
