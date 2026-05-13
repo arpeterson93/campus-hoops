@@ -1317,7 +1317,9 @@ def render_data_pack():
 
     # ------------------------------------------------------------------ 2. Edit
     st.subheader("2 · Edit")
-    tab_meta, tab_confs, tab_teams = st.tabs(["Meta", "Conferences", "Teams"])
+    tab_meta, tab_branding, tab_awards, tab_rules, tab_confs, tab_teams = st.tabs(
+        ["Meta", "Branding", "Awards", "Rules", "Conferences", "Teams"]
+    )
 
     with tab_meta:
         new_name    = st.text_input("Pack name",    value=meta.get("name", ""))
@@ -1333,6 +1335,188 @@ def render_data_pack():
                 },
             }
             st.success("Meta updated.")
+
+    with tab_branding:
+        branding   = raw.get("branding", {})
+        rn         = branding.get("roundNames", {})
+        regions    = branding.get("regionNames", ["East", "West", "South", "Midwest"])
+
+        b_natl = st.text_input("National Tournament name", value=branding.get("nationalTournament", ""))
+        b_hof  = st.text_input("Hall of Fame name",        value=branding.get("hallOfFame", ""))
+
+        st.markdown("**Round Names**")
+        _round_keys = ["firstFour","roundOf64","roundOf32","sweet16","elite8","finalFour","championship"]
+        _round_lbls = ["First Four","Round of 64","Round of 32","Sweet Sixteen","Elite Eight","Final Four","Championship"]
+        b_rounds = {}
+        rn_c1, rn_c2 = st.columns(2)
+        for i, (k, lbl) in enumerate(zip(_round_keys, _round_lbls)):
+            with (rn_c1 if i % 2 == 0 else rn_c2):
+                b_rounds[k] = st.text_input(lbl, value=rn.get(k, ""), key=f"br_rn_{k}")
+
+        st.markdown("**Region Names**")
+        reg_cols = st.columns(4)
+        b_regions = []
+        for i in range(4):
+            with reg_cols[i]:
+                b_regions.append(st.text_input(
+                    f"Region {i+1}", value=regions[i] if i < len(regions) else "", key=f"br_reg_{i}"
+                ))
+
+        if st.button("Save branding"):
+            st.session_state["dp_raw"] = {
+                **st.session_state["dp_raw"],
+                "branding": {
+                    "nationalTournament": b_natl,
+                    "roundNames": b_rounds,
+                    "regionNames": [r for r in b_regions if r],
+                    "hallOfFame": b_hof,
+                },
+            }
+            st.success("Branding updated.")
+
+    with tab_awards:
+        awards    = raw.get("awards", {})
+        hs_awards = raw.get("hsAwards", {})
+
+        st.markdown("**Awards**")
+        _aw_keys = ["mvp","dpoy","freshman","mostImproved","sixthMan","coachOfYear",
+                    "tournamentMop","allAmerican","allConference","allTournament",
+                    "positionOfYear","nationalChampion","confChampion"]
+        _aw_lbls = {
+            "mvp":"Player of the Year","dpoy":"Defensive POY","freshman":"Freshman Award",
+            "mostImproved":"Most Improved","sixthMan":"Sixth Man","coachOfYear":"Coach of the Year",
+            "tournamentMop":"Tournament MOP","allAmerican":"All-American",
+            "allConference":"All-Conference","allTournament":"All-Tournament",
+            "positionOfYear":"Position of the Year","nationalChampion":"National Champion",
+            "confChampion":"Conference Champion",
+        }
+        new_awards = {}
+        aw_c1, aw_c2 = st.columns(2)
+        for i, k in enumerate(_aw_keys):
+            with (aw_c1 if i % 2 == 0 else aw_c2):
+                new_awards[k] = st.text_input(_aw_lbls[k], value=awards.get(k, ""), key=f"aw_{k}")
+
+        st.markdown("**High School Awards**")
+        _hs_keys = ["nationalPoy","allAmerican","statePoy","eliteShowcase"]
+        _hs_lbls = {
+            "nationalPoy":"National POY","allAmerican":"All-American",
+            "statePoy":"State POY","eliteShowcase":"Elite Showcase",
+        }
+        new_hs = {}
+        hs_c1, hs_c2 = st.columns(2)
+        for i, k in enumerate(_hs_keys):
+            with (hs_c1 if i % 2 == 0 else hs_c2):
+                new_hs[k] = st.text_input(_hs_lbls[k], value=hs_awards.get(k, ""), key=f"hs_{k}")
+
+        if st.button("Save awards"):
+            st.session_state["dp_raw"] = {
+                **st.session_state["dp_raw"],
+                "awards": new_awards,
+                "hsAwards": new_hs,
+            }
+            st.success("Awards updated.")
+
+    with tab_rules:
+        rules      = raw.get("rules", {})
+        sched      = rules.get("schedule", {})
+        ct         = rules.get("conferenceTournaments", {})
+        nt         = rules.get("nationalTournament", {})
+        pi         = nt.get("playIn", {})
+        bb         = nt.get("bubble", {})
+        bk         = nt.get("bracket", {})
+        rn_teams   = nt.get("roundNamesByRemainingTeams", {})
+
+        st.markdown("**Schedule**")
+        sc1, sc2 = st.columns(2)
+        r_games      = sc1.number_input("Games per team",          value=int(sched.get("gamesPerTeam", 32)),          min_value=1)
+        r_conf_games = sc2.number_input("Default conference games", value=int(sched.get("defaultConferenceGames", 18)), min_value=1)
+
+        st.markdown("**Conference Tournaments**")
+        ct1, ct2, ct3, ct4 = st.columns(4)
+        r_ct_enabled    = ct1.checkbox("Enabled",        value=bool(ct.get("enabled", True)),       key="r_ct_en")
+        r_ct_autobid    = ct2.checkbox("Winner auto bid", value=bool(ct.get("winnerAutoBid", True)), key="r_ct_ab")
+        r_ct_qualifiers = ct3.text_input("Qualifiers",   value=str(ct.get("defaultQualifiers", "all")), key="r_ct_q")
+        r_ct_bracket    = ct4.selectbox("Bracket type",  ["singleElimination","doubleElimination"],
+                                         index=0 if ct.get("bracketType","singleElimination") == "singleElimination" else 1,
+                                         key="r_ct_br")
+
+        st.markdown("**National Tournament**")
+        nt1, nt2, nt3 = st.columns(3)
+        r_nt_enabled    = nt1.checkbox("Enabled",    value=bool(nt.get("enabled", True)),  key="r_nt_en")
+        r_nt_field      = nt2.number_input("Field size",         value=int(nt.get("fieldSize", 68)),         min_value=1)
+        r_nt_main       = nt3.number_input("Main bracket size",  value=int(nt.get("mainBracketSize", 64)),   min_value=1)
+        na1, na2, na3 = st.columns(3)
+        r_nt_autobid_src   = na1.text_input("Auto bid source",    value=str(nt.get("autoBidSource", "")))
+        r_nt_autobid_confs = na2.text_input("Auto bid confs",     value=str(nt.get("autoBidConferences", "all")))
+        r_nt_atlarge_src   = na3.text_input("At-large bid source",value=str(nt.get("atLargeBidSource", "")))
+
+        st.markdown("*Play-In*")
+        pi1, pi2, pi3 = st.columns(3)
+        r_pi_enabled = pi1.checkbox("Enabled",         value=bool(pi.get("enabled", True)),     key="r_pi_en")
+        r_pi_autobid = pi2.number_input("Auto bid teams", value=int(pi.get("autoBidTeams", 4)), min_value=0)
+        r_pi_atlarge = pi3.number_input("At-large teams", value=int(pi.get("atLargeTeams", 4)), min_value=0)
+
+        st.markdown("*Bubble*")
+        bb1, bb2, bb3 = st.columns(3)
+        r_bb_enabled  = bb1.checkbox("Enabled",         value=bool(bb.get("enabled", True)),      key="r_bb_en")
+        r_bb_lastin   = bb2.number_input("Last in",     value=int(bb.get("lastInCount", 4)),      min_value=0)
+        r_bb_firstout = bb3.number_input("First out",   value=int(bb.get("firstOutCount", 4)),    min_value=0)
+
+        st.markdown("*Bracket*")
+        bk1, bk2 = st.columns(2)
+        r_bk_type    = bk1.selectbox("Type", ["singleElimination","doubleElimination"],
+                                      index=0 if bk.get("type","singleElimination") == "singleElimination" else 1,
+                                      key="r_bk_ty")
+        r_bk_regions = bk2.number_input("Regions", value=int(bk.get("regions", 4)), min_value=1)
+
+        st.markdown("*Round Names by Remaining Teams*")
+        _rn_keys = ["68","64","32","16","8","4","2"]
+        new_rn = {}
+        rnt_c1, rnt_c2 = st.columns(2)
+        for i, k in enumerate(_rn_keys):
+            with (rnt_c1 if i % 2 == 0 else rnt_c2):
+                new_rn[k] = st.text_input(f"{k} teams remaining", value=rn_teams.get(k, ""), key=f"rn_t_{k}")
+
+        if st.button("Save rules"):
+            st.session_state["dp_raw"] = {
+                **st.session_state["dp_raw"],
+                "rules": {
+                    "schedule": {
+                        "gamesPerTeam": r_games,
+                        "defaultConferenceGames": r_conf_games,
+                    },
+                    "conferenceTournaments": {
+                        "enabled": r_ct_enabled,
+                        "defaultQualifiers": r_ct_qualifiers,
+                        "bracketType": r_ct_bracket,
+                        "winnerAutoBid": r_ct_autobid,
+                    },
+                    "nationalTournament": {
+                        "enabled": r_nt_enabled,
+                        "fieldSize": r_nt_field,
+                        "mainBracketSize": r_nt_main,
+                        "autoBidSource": r_nt_autobid_src,
+                        "autoBidConferences": r_nt_autobid_confs,
+                        "atLargeBidSource": r_nt_atlarge_src,
+                        "playIn": {
+                            "enabled": r_pi_enabled,
+                            "autoBidTeams": r_pi_autobid,
+                            "atLargeTeams": r_pi_atlarge,
+                        },
+                        "bubble": {
+                            "enabled": r_bb_enabled,
+                            "lastInCount": r_bb_lastin,
+                            "firstOutCount": r_bb_firstout,
+                        },
+                        "bracket": {
+                            "type": r_bk_type,
+                            "regions": r_bk_regions,
+                        },
+                        "roundNamesByRemainingTeams": new_rn,
+                    },
+                },
+            }
+            st.success("Rules updated.")
 
     with tab_confs:
         confs_df = st.session_state["dp_confs"]
