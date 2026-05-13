@@ -1600,6 +1600,13 @@ def render_data_pack():
             display_teams = teams_df
         st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
 
+        # Place conferenceId immediately after _conf_name
+        _dt_cols = list(display_teams.columns)
+        if "_conf_name" in _dt_cols and "conferenceId" in _dt_cols:
+            _dt_cols.remove("conferenceId")
+            _dt_cols.insert(_dt_cols.index("_conf_name") + 1, "conferenceId")
+            display_teams = display_teams[_dt_cols]
+
         edited_teams = st.data_editor(
             display_teams, column_config=teams_col_cfg,
             use_container_width=True, num_rows="dynamic",
