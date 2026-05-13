@@ -956,7 +956,13 @@ def render_teams():
             current_logo = logo_edits.get(selected_logo_tid) or existing_logos.get(selected_logo_tid)
             with col_img:
                 if current_logo:
-                    st.image(current_logo, width=80)
+                    # Composite onto a dark background so transparency is visible
+                    _prev = Image.open(io.BytesIO(current_logo)).convert("RGBA")
+                    _bg   = Image.new("RGBA", _prev.size, (60, 60, 60, 255))
+                    _bg.paste(_prev, mask=_prev.split()[3])
+                    _buf  = io.BytesIO()
+                    _bg.save(_buf, format="PNG")
+                    st.image(_buf.getvalue(), width=80)
                     st.caption("staged" if selected_logo_tid in logo_edits else "from save")
                 else:
                     st.caption("No logo")
@@ -978,6 +984,14 @@ def render_teams():
                         del logo_edits[selected_logo_tid]
                         st.session_state["logo_edits"] = logo_edits
                         st.rerun()
+
+            st.divider()
+            if st.button("Remove white background from all logos", key="logo_rmbg_all"):
+                all_logos = {**existing_logos, **logo_edits}
+                for tid, logo_bytes in all_logos.items():
+                    logo_edits[tid] = _remove_white_bg(logo_bytes)
+                st.session_state["logo_edits"] = logo_edits
+                st.rerun()
 
             if logo_edits:
                 names = ", ".join(team_name_map.get(tid, tid) for tid in logo_edits)
