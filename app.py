@@ -1430,8 +1430,8 @@ def render_data_pack():
         return
 
     json_str = st.session_state["dp_json_output"]
-    st.caption(f"{len(json_str):,} characters — copy button is in the top-right of the code block")
-    st.code(json_str, language="json")
+    with st.expander(f"JSON output ({len(json_str):,} characters) — copy button is inside ↓"):
+        st.code(json_str, language="json")
 
     st.divider()
     st.subheader("Post to Pastebin")
