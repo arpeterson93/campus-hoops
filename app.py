@@ -1575,7 +1575,6 @@ def render_data_pack():
         teams_col_cfg = {
             "id":             st.column_config.TextColumn("ID"),
             "_conf_name":     st.column_config.SelectboxColumn("Conference", options=conf_name_options_all),
-            "conferenceId":   st.column_config.TextColumn("Conf ID", disabled=True),
             "state":          st.column_config.SelectboxColumn("State",      options=us_states),
             "offenseRating":  st.column_config.NumberColumn("Off Rtg",  min_value=1, max_value=99),
             "defenseRating":  st.column_config.NumberColumn("Def Rtg",  min_value=1, max_value=99),
@@ -1600,12 +1599,13 @@ def render_data_pack():
             display_teams = teams_df
         st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
 
-        # Place conferenceId immediately after _conf_name
-        _dt_cols = list(display_teams.columns)
-        if "_conf_name" in _dt_cols and "conferenceId" in _dt_cols:
-            _dt_cols.remove("conferenceId")
-            _dt_cols.insert(_dt_cols.index("_conf_name") + 1, "conferenceId")
-            display_teams = display_teams[_dt_cols]
+        # Drop conferenceId from display (deduced from _conf_name at JSON build time)
+        # and move _conf_name immediately before state
+        _dt_cols = [c for c in display_teams.columns if c != "conferenceId"]
+        if "_conf_name" in _dt_cols and "state" in _dt_cols:
+            _dt_cols.remove("_conf_name")
+            _dt_cols.insert(_dt_cols.index("state"), "_conf_name")
+        display_teams = display_teams[_dt_cols]
 
         edited_teams = st.data_editor(
             display_teams, column_config=teams_col_cfg,
