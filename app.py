@@ -908,15 +908,16 @@ def render_teams():
     with st.expander("Team Logos"):
         raw_zip = st.session_state.get("raw_zip", b"")
 
-        # Cache logos read from the original zip (read once per save upload)
-        if "existing_logos" not in st.session_state and raw_zip:
+        # Cache logos from the extracted save folder (read once per save upload)
+        if "existing_logos" not in st.session_state:
             existing: dict[str, bytes] = {}
-            with zipfile.ZipFile(io.BytesIO(raw_zip)) as _zf:
-                for _info in _zf.infolist():
-                    _n = _info.filename
-                    if "/logos/" in _n and _n.lower().endswith(".png"):
-                        _tid = _n.rsplit("/", 1)[-1][:-4]
-                        existing[_tid] = _zf.read(_n)
+            logos_dir = os.path.join(str(save.folder), "logos")
+            if os.path.isdir(logos_dir):
+                for _fname in os.listdir(logos_dir):
+                    if _fname.lower().endswith(".png"):
+                        _tid = _fname[:-4]
+                        with open(os.path.join(logos_dir, _fname), "rb") as _f:
+                            existing[_tid] = _f.read()
             st.session_state["existing_logos"] = existing
         existing_logos: dict[str, bytes] = st.session_state.get("existing_logos", {})
 
