@@ -1326,7 +1326,7 @@ def render_data_pack():
         new_author  = st.text_input("Author",       value=meta.get("author", ""))
         new_version = st.number_input("Version", value=int(meta.get("version", 1)), min_value=1, step=1)
         new_desc    = st.text_area("Description",   value=meta.get("description", ""), height=80)
-        if st.button("Save meta changes"):
+        if st.button("Save Meta"):
             st.session_state["dp_raw"] = {
                 **raw,
                 "meta": {
@@ -1362,7 +1362,7 @@ def render_data_pack():
                     f"Region {i+1}", value=regions[i] if i < len(regions) else "", key=f"br_reg_{i}"
                 ))
 
-        if st.button("Save branding"):
+        if st.button("Save Branding"):
             st.session_state["dp_raw"] = {
                 **st.session_state["dp_raw"],
                 "branding": {
@@ -1408,7 +1408,7 @@ def render_data_pack():
             with (hs_c1 if i % 2 == 0 else hs_c2):
                 new_hs[k] = st.text_input(_hs_lbls[k], value=hs_awards.get(k, ""), key=f"hs_{k}")
 
-        if st.button("Save awards"):
+        if st.button("Save Awards"):
             st.session_state["dp_raw"] = {
                 **st.session_state["dp_raw"],
                 "awards": new_awards,
@@ -1429,14 +1429,14 @@ def render_data_pack():
         st.markdown("**Schedule**")
         sc1, sc2 = st.columns(2)
         r_games      = sc1.number_input("Games per team",          value=int(sched.get("gamesPerTeam", 32)),          min_value=1)
-        r_conf_games = sc2.number_input("Default conference games", value=int(sched.get("defaultConferenceGames", 18)), min_value=1)
+        r_conf_games = sc2.number_input("Default conference games", value=int(sched.get("defaultConferenceGames", 18)), min_value=1, max_value=r_games)
 
         st.markdown("**Conference Tournaments**")
         ct1, ct2, ct3, ct4 = st.columns(4)
         r_ct_enabled    = ct1.checkbox("Enabled",        value=bool(ct.get("enabled", True)),       key="r_ct_en")
         r_ct_autobid    = ct2.checkbox("Winner auto bid", value=bool(ct.get("winnerAutoBid", True)), key="r_ct_ab")
         r_ct_qualifiers = ct3.text_input("Qualifiers",   value=str(ct.get("defaultQualifiers", "all")), key="r_ct_q")
-        r_ct_bracket    = ct4.selectbox("Bracket type",  ["singleElimination","doubleElimination"],
+        r_ct_bracket    = ct4.selectbox("Bracket type",  ["singleElimination"],
                                          index=0 if ct.get("bracketType","singleElimination") == "singleElimination" else 1,
                                          key="r_ct_br")
 
@@ -1444,7 +1444,7 @@ def render_data_pack():
         nt1, nt2, nt3 = st.columns(3)
         r_nt_enabled    = nt1.checkbox("Enabled",    value=bool(nt.get("enabled", True)),  key="r_nt_en")
         r_nt_field      = nt2.number_input("Field size",         value=int(nt.get("fieldSize", 68)),         min_value=1)
-        r_nt_main       = nt3.number_input("Main bracket size",  value=int(nt.get("mainBracketSize", 64)),   min_value=1)
+        r_nt_main       = nt3.number_input("Main bracket size",  value=int(nt.get("mainBracketSize", 64)),   min_value=1, max_value=r_nt_field)
         na1, na2, na3 = st.columns(3)
         r_nt_autobid_src   = na1.text_input("Auto bid source",    value=str(nt.get("autoBidSource", "")))
         r_nt_autobid_confs = na2.text_input("Auto bid confs",     value=str(nt.get("autoBidConferences", "all")))
@@ -1464,20 +1464,32 @@ def render_data_pack():
 
         st.markdown("*Bracket*")
         bk1, bk2 = st.columns(2)
-        r_bk_type    = bk1.selectbox("Type", ["singleElimination","doubleElimination"],
+        r_bk_type    = bk1.selectbox("Type", ["singleElimination"],
                                       index=0 if bk.get("type","singleElimination") == "singleElimination" else 1,
                                       key="r_bk_ty")
         r_bk_regions = bk2.number_input("Regions", value=int(bk.get("regions", 4)), min_value=1)
 
         st.markdown("*Round Names by Remaining Teams*")
-        _rn_keys = ["68","64","32","16","8","4","2"]
-        new_rn = {}
-        rnt_c1, rnt_c2 = st.columns(2)
-        for i, k in enumerate(_rn_keys):
-            with (rnt_c1 if i % 2 == 0 else rnt_c2):
-                new_rn[k] = st.text_input(f"{k} teams remaining", value=rn_teams.get(k, ""), key=f"rn_t_{k}")
+        rn_df_default = [{"teams_remaining": k, "round_name": ""}
+                         for k in ["68","64","32","16","8","4","2"]]
+        rn_df = pd.DataFrame([
+            {"teams_remaining": k, "round_name": v} for k, v in rn_teams.items()
+        ] if rn_teams else rn_df_default)
+        edited_rn_df = st.data_editor(
+            rn_df,
+            column_config={
+                "teams_remaining": st.column_config.TextColumn("Teams Remaining"),
+                "round_name":      st.column_config.TextColumn("Round Name"),
+            },
+            use_container_width=True, num_rows="dynamic", key="rn_editor",
+        )
+        new_rn = {
+            str(row["teams_remaining"]): str(row["round_name"])
+            for _, row in edited_rn_df.iterrows()
+            if row.get("teams_remaining") and row.get("round_name")
+        }
 
-        if st.button("Save rules"):
+        if st.button("Save Rules"):
             st.session_state["dp_raw"] = {
                 **st.session_state["dp_raw"],
                 "rules": {
