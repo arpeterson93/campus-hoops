@@ -492,6 +492,8 @@ with st.sidebar:
             st.session_state["raw_data"] = {}
             st.session_state["dirty_pages"] = set()
             st.session_state.pop("download_bytes", None)
+            st.session_state.pop("logo_edits", None)
+            st.session_state.pop("existing_logos", None)
 
     if "save" in st.session_state:
         save: SaveFile = st.session_state["save"]
@@ -512,7 +514,8 @@ with st.sidebar:
             with st.spinner("Building…"):
                 _apply_all_edits(save)
                 st.session_state["download_bytes"] = save.to_campushoops_bytes(
-                    st.session_state["raw_zip"]
+                    st.session_state["raw_zip"],
+                    logo_overrides=st.session_state.get("logo_edits") or None,
                 )
 
         if "download_bytes" in st.session_state:
@@ -900,6 +903,68 @@ def render_teams():
         _csv_download_btn(edited, fname)
     with c2:
         _csv_upload_widget(page_key, current_df, key=f"csv_up_teams_{conf_filter}")
+
+    # ---- Logo management ----
+    with st.expander("Team Logos"):
+        raw_zip = st.session_state.get("raw_zip", b"")
+
+        # Cache logos read from the original zip (read once per save upload)
+        if "existing_logos" not in st.session_state and raw_zip:
+            existing: dict[str, bytes] = {}
+            with zipfile.ZipFile(io.BytesIO(raw_zip)) as _zf:
+                for _info in _zf.infolist():
+                    _n = _info.filename
+                    if "/logos/" in _n and _n.lower().endswith(".png"):
+                        _tid = _n.rsplit("/", 1)[-1][:-4]
+                        existing[_tid] = _zf.read(_n)
+            st.session_state["existing_logos"] = existing
+        existing_logos: dict[str, bytes] = st.session_state.get("existing_logos", {})
+
+        if "logo_edits" not in st.session_state:
+            st.session_state["logo_edits"] = {}
+        logo_edits: dict[str, bytes] = st.session_state["logo_edits"]
+
+        team_rows = [
+            (row["id"], row.get("name") or row["id"])
+            for _, row in current_df.iterrows()
+            if row.get("id")
+        ]
+        if not team_rows:
+            st.caption("No teams loaded.")
+        else:
+            team_name_map = {tid: name for tid, name in team_rows}
+            selected_logo_tid = st.selectbox(
+                "Team",
+                options=[tid for tid, _ in team_rows],
+                format_func=lambda tid: f"{team_name_map.get(tid, tid)} ({tid})",
+                key="logo_team_select",
+            )
+
+            col_img, col_up = st.columns([1, 3])
+            current_logo = logo_edits.get(selected_logo_tid) or existing_logos.get(selected_logo_tid)
+            with col_img:
+                if current_logo:
+                    st.image(current_logo, width=80)
+                    st.caption("staged" if selected_logo_tid in logo_edits else "from save")
+                else:
+                    st.caption("No logo")
+
+            with col_up:
+                uploaded_logo = st.file_uploader(
+                    "Upload PNG", type=["png"], key=f"logo_up_{selected_logo_tid}",
+                )
+                if uploaded_logo is not None:
+                    logo_edits[selected_logo_tid] = uploaded_logo.getvalue()
+                    st.session_state["logo_edits"] = logo_edits
+                if selected_logo_tid in logo_edits:
+                    if st.button("Remove staged logo", key=f"logo_rm_{selected_logo_tid}"):
+                        del logo_edits[selected_logo_tid]
+                        st.session_state["logo_edits"] = logo_edits
+                        st.rerun()
+
+            if logo_edits:
+                names = ", ".join(team_name_map.get(tid, tid) for tid in logo_edits)
+                st.info(f"{len(logo_edits)} logo(s) staged for export: {names}")
 
 
 # ================================================================== Conferences
