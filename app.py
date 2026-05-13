@@ -1378,21 +1378,27 @@ def render_data_pack():
             "logoUrl":        st.column_config.LinkColumn("Logo URL", display_text="link"),
         }
 
-        conf_filter = st.selectbox(
-            "Filter by conference",
-            ["All"] + sorted(teams_df["conferenceId"].dropna().unique().tolist()),
-            key="dp_teams_conf_filter",
+        conf_id_to_name = st.session_state["dp_confs"].set_index("id")["name"].to_dict()
+        conf_name_to_id = {v: k for k, v in conf_id_to_name.items()}
+        conf_name_options = ["All"] + sorted(
+            conf_id_to_name.get(cid, cid)
+            for cid in teams_df["conferenceId"].dropna().unique()
         )
-        display_teams = (
-            teams_df[teams_df["conferenceId"] == conf_filter].copy()
-            if conf_filter != "All" else teams_df
+        conf_filter_name = st.selectbox(
+            "Filter by conference", conf_name_options, key="dp_teams_conf_filter",
         )
+        if conf_filter_name != "All":
+            filter_id = conf_name_to_id.get(conf_filter_name, conf_filter_name)
+            display_teams = teams_df[teams_df["conferenceId"] == filter_id].copy()
+        else:
+            filter_id = "All"
+            display_teams = teams_df
         st.caption(f"{len(display_teams)} of {len(teams_df)} teams")
 
         edited_teams = st.data_editor(
             display_teams, column_config=teams_col_cfg,
             use_container_width=True, num_rows="dynamic",
-            key=f"dp_teams_editor_{conf_filter}",
+            key=f"dp_teams_editor_{filter_id}",
         )
         if not edited_teams.equals(display_teams):
             id_to_edit = edited_teams.set_index("id").to_dict("index")
@@ -1406,9 +1412,9 @@ def render_data_pack():
 
         c1, c2 = st.columns(2)
         with c1:
-            _csv_download_btn(edited_teams, f"datapack_teams_{conf_filter}.csv")
+            _csv_download_btn(edited_teams, f"datapack_teams_{filter_id}.csv")
         with c2:
-            _dp_csv_upload("dp_teams", teams_df, f"dp_csv_teams_{conf_filter}")
+            _dp_csv_upload("dp_teams", teams_df, f"dp_csv_teams_{filter_id}")
 
     # ------------------------------------------------------------------ 3. Export
     st.subheader("3 · Export")
