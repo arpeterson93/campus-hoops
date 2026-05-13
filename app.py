@@ -458,7 +458,7 @@ def _csv_upload_widget(page_key: str, reference_df: pd.DataFrame, key: str):
 
 page = st.sidebar.radio(
     "Page",
-    ["Recruiting Pool", "Coaches", "Rosters", "Teams", "Conferences", "Data Pack"],
+    ["Data Pack", "Conferences", "Teams", "Rosters", "Coaches", "Recruiting Pool"],
 )
 
 with st.sidebar:
@@ -1265,7 +1265,8 @@ def render_data_pack():
     )
 
     # ------------------------------------------------------------------ 1. Import
-    with st.expander("1 · Import", expanded="dp_raw" not in st.session_state):
+    st.subheader("1 · Import")
+    with st.expander("Start from existing JSON", expanded="dp_raw" not in st.session_state):
         col_url, col_btn = st.columns([5, 1])
         url_input = col_url.text_input(
             "Pastebin URL", placeholder="https://pastebin.com/abc123",
