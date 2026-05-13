@@ -1555,8 +1555,17 @@ def render_data_pack():
             _dp_csv_upload("dp_confs", confs_df, "dp_csv_confs")
 
     with tab_teams:
-        teams_df  = st.session_state["dp_teams"]
-        conf_ids  = [""] + sorted(st.session_state["dp_confs"]["id"].dropna().tolist())
+        teams_df = st.session_state["dp_teams"]
+
+        conf_id_to_name = st.session_state["dp_confs"].set_index("id")["name"].to_dict()
+        conf_name_to_id = {v: k for k, v in conf_id_to_name.items()}
+        conf_name_options_all = [""] + sorted(conf_name_to_id.keys())
+
+        # Keep _conf_name in sync with conferenceId on every render
+        teams_df = teams_df.copy()
+        teams_df["_conf_name"] = teams_df["conferenceId"].map(conf_id_to_name).fillna("")
+        st.session_state["dp_teams"] = teams_df
+
         us_states = [
             "", "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
             "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM",
@@ -1565,7 +1574,8 @@ def render_data_pack():
         ]
         teams_col_cfg = {
             "id":             st.column_config.TextColumn("ID"),
-            "conferenceId":   st.column_config.SelectboxColumn("Conference", options=conf_ids),
+            "_conf_name":     st.column_config.SelectboxColumn("Conference", options=conf_name_options_all),
+            "conferenceId":   st.column_config.TextColumn("Conf ID", disabled=True),
             "state":          st.column_config.SelectboxColumn("State",      options=us_states),
             "offenseRating":  st.column_config.NumberColumn("Off Rtg",  min_value=1, max_value=99),
             "defenseRating":  st.column_config.NumberColumn("Def Rtg",  min_value=1, max_value=99),
@@ -1575,14 +1585,12 @@ def render_data_pack():
             "logoUrl":        st.column_config.LinkColumn("Logo URL", display_text="link"),
         }
 
-        conf_id_to_name = st.session_state["dp_confs"].set_index("id")["name"].to_dict()
-        conf_name_to_id = {v: k for k, v in conf_id_to_name.items()}
-        conf_name_options = ["All"] + sorted(
+        conf_name_filter_options = ["All"] + sorted(
             conf_id_to_name.get(cid, cid)
             for cid in teams_df["conferenceId"].dropna().unique()
         )
         conf_filter_name = st.selectbox(
-            "Filter by conference", conf_name_options, key="dp_teams_conf_filter",
+            "Filter by conference", conf_name_filter_options, key="dp_teams_conf_filter",
         )
         if conf_filter_name != "All":
             filter_id = conf_name_to_id.get(conf_filter_name, conf_filter_name)
@@ -1605,6 +1613,8 @@ def render_data_pack():
                 if tid and tid in id_to_edit:
                     for col, val in id_to_edit[tid].items():
                         new_full.at[idx, col] = val
+            # Sync conferenceId from the name selectbox
+            new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
             st.session_state["dp_teams"] = new_full
 
         c1, c2 = st.columns(2)
