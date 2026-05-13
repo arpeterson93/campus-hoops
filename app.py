@@ -1681,7 +1681,8 @@ def render_data_pack():
             placeholder="Your dev key from pastebin.com/api",
         )
 
-    pack_title = st.session_state["dp_raw"].get("meta", {}).get("name", "Campus Hoops data pack")
+    default_title = st.session_state["dp_raw"].get("meta", {}).get("name", "Campus Hoops data pack")
+    pack_title = st.text_input("Paste title", value=default_title, key="dp_paste_title")
 
     if st.button("Post to Pastebin →", disabled=not api_key, type="primary"):
         with st.spinner("Posting…"):
