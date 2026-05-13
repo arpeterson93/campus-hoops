@@ -828,7 +828,9 @@ def render_teams():
     if page_key not in st.session_state.get("page_edits", {}):
         raw = save.get("season.teams") or []
         st.session_state.setdefault("raw_data", {})[page_key] = raw
-        st.session_state.setdefault("page_edits", {})[page_key] = _teams_to_df(raw)
+        st.session_state.setdefault("page_edits", {})[page_key] = _teams_to_df(raw).sort_values(
+            ["conference", "name"], key=lambda s: s.str.lower(), na_position="last", ignore_index=True
+        )
 
     current_df: pd.DataFrame = st.session_state["page_edits"][page_key]
 
@@ -915,7 +917,9 @@ def render_conferences():
         conferences = save.get("season.conferences") or []
         power = save.get("season.powerConferences") or []
         teams = save.get("season.teams") or []
-        df = _conferences_to_df(conferences, power, teams)
+        df = _conferences_to_df(conferences, power, teams).sort_values(
+            "conference", key=lambda s: s.str.lower(), na_position="last", ignore_index=True
+        )
         st.session_state.setdefault("page_edits", {})[page_key] = df
 
     current_df = st.session_state["page_edits"][page_key]
@@ -1259,6 +1263,7 @@ def _dp_load(url_or_raw: str | None = None, file_bytes: bytes | None = None):
     st.session_state["dp_raw"] = data
     st.session_state.pop("dp_teams", None)
     st.session_state.pop("dp_confs", None)
+    st.session_state.pop("_dp_confs_base", None)
     st.session_state.pop("dp_json_output", None)
     st.session_state.pop("dp_paste_url", None)
 
@@ -1553,18 +1558,26 @@ def render_data_pack():
             "prestigeCeiling":  st.column_config.NumberColumn("Pres Ceiling", min_value=1, max_value=99),
             "logoUrl":          st.column_config.LinkColumn("Logo URL", display_text="link"),
         }
+        _confs_base_key = "_dp_confs_base"
+        if _confs_base_key not in st.session_state:
+            st.session_state[_confs_base_key] = confs_df.copy()
+        editor_base_confs = st.session_state[_confs_base_key]
+
         edited_confs = st.data_editor(
-            confs_df, column_config=conf_col_cfg,
+            editor_base_confs, column_config=conf_col_cfg,
             use_container_width=True, num_rows="dynamic", key="dp_confs_editor",
         )
-        if not edited_confs.equals(confs_df):
+        if not edited_confs.equals(editor_base_confs):
             st.session_state["dp_confs"] = edited_confs
 
         c1, c2 = st.columns(2)
         with c1:
             _csv_download_btn(edited_confs, "datapack_conferences.csv")
         with c2:
-            _dp_csv_upload("dp_confs", confs_df, "dp_csv_confs")
+            prev_last_confs = st.session_state.get("_csv_last_id_dp_csv_confs")
+            _dp_csv_upload("dp_confs", editor_base_confs, "dp_csv_confs")
+            if st.session_state.get("_csv_last_id_dp_csv_confs") != prev_last_confs:
+                st.session_state.pop(_confs_base_key, None)
 
     with tab_teams:
         teams_df = st.session_state["dp_teams"]
@@ -1655,8 +1668,17 @@ def render_data_pack():
 
     if st.button("Build JSON", type="primary"):
         output = dict(raw)
-        output["conferences"] = _dp_df_to_confs(st.session_state["dp_confs"])
-        output["teams"]       = _dp_df_to_teams(st.session_state["dp_teams"], raw.get("teams", []))
+        confs_sorted = st.session_state["dp_confs"].sort_values(
+            "name", key=lambda s: s.str.lower(), na_position="last"
+        )
+        output["conferences"] = _dp_df_to_confs(confs_sorted)
+        conf_id_to_name_export = confs_sorted.set_index("id")["name"].to_dict()
+        teams_export = st.session_state["dp_teams"].copy()
+        teams_export["_sort_conf"] = teams_export["conferenceId"].map(conf_id_to_name_export).fillna("")
+        teams_export = teams_export.sort_values(
+            ["_sort_conf", "name"], key=lambda s: s.str.lower(), na_position="last"
+        )
+        output["teams"]       = _dp_df_to_teams(teams_export, raw.get("teams", []))
         st.session_state["dp_json_output"] = json.dumps(output, indent=2)
         st.session_state.pop("dp_paste_url", None)
 
