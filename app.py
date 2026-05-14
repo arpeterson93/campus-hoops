@@ -1374,7 +1374,7 @@ def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
             "prestige":       int(row.get("prestige") or 50),
             "state":          row.get("state", ""),
             "pipelineStates": [s.strip() for s in ps_raw.split(",") if s.strip()],
-            "logoUrl":        _val(row.get("logoUrl")) or orig.get("logoUrl"),
+            "logoUrl":        _val(row.get("logoUrl")) or orig.get("logoUrl") or "",
         })
     return result
 
