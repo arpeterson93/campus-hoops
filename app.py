@@ -1345,6 +1345,17 @@ def _dp_teams_to_df(teams: list[dict]) -> pd.DataFrame:
 
 def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
     orig_by_id = {t.get("id"): t for t in original}
+
+    def _val(v):
+        """Return None for NaN/blank, otherwise the value as-is."""
+        if v is None:
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     result = []
     for _, row in df.iterrows():
         tid = str(row.get("id", ""))
@@ -1356,14 +1367,14 @@ def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
             "mascot":         row.get("mascot", ""),
             "abbreviation":   row.get("abbreviation", ""),
             "conferenceId":   row.get("conferenceId", ""),
-            "primaryColor":   row.get("primaryColor") or orig.get("primaryColor"),
-            "secondaryColor": row.get("secondaryColor") or orig.get("secondaryColor"),
+            "primaryColor":   _val(row.get("primaryColor")) or orig.get("primaryColor"),
+            "secondaryColor": _val(row.get("secondaryColor")) or orig.get("secondaryColor"),
             "offenseRating":  int(row.get("offenseRating") or 75),
             "defenseRating":  int(row.get("defenseRating") or 75),
             "prestige":       int(row.get("prestige") or 50),
             "state":          row.get("state", ""),
             "pipelineStates": [s.strip() for s in ps_raw.split(",") if s.strip()],
-            "logoUrl":        row.get("logoUrl") or orig.get("logoUrl"),
+            "logoUrl":        _val(row.get("logoUrl")) or orig.get("logoUrl"),
         })
     return result
 
