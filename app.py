@@ -1346,35 +1346,39 @@ def _dp_teams_to_df(teams: list[dict]) -> pd.DataFrame:
 def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
     orig_by_id = {t.get("id"): t for t in original}
 
-    def _val(v):
-        """Return None for NaN/blank, otherwise the value as-is."""
-        if v is None:
-            return None
-        if isinstance(v, float) and math.isnan(v):
-            return None
-        if isinstance(v, str) and not v.strip():
-            return None
-        return v
+    def _nan(v):
+        return v is None or (isinstance(v, float) and math.isnan(v))
+
+    def _str(v, default=""):
+        return default if _nan(v) else str(v).strip() or default
+
+    def _int(v, default):
+        if _nan(v):
+            return default
+        try:
+            return int(float(v))
+        except (ValueError, TypeError):
+            return default
 
     result = []
     for _, row in df.iterrows():
-        tid = str(row.get("id", ""))
+        tid = _str(row.get("id"))
         orig = orig_by_id.get(tid, {})
-        ps_raw = str(row.get("pipelineStates") or "")
+        ps_raw = _str(row.get("pipelineStates"))
         result.append({
             "id":             tid,
-            "name":           row.get("name", ""),
-            "mascot":         row.get("mascot", ""),
-            "abbreviation":   row.get("abbreviation", ""),
-            "conferenceId":   row.get("conferenceId", ""),
-            "primaryColor":   _val(row.get("primaryColor")) or orig.get("primaryColor"),
-            "secondaryColor": _val(row.get("secondaryColor")) or orig.get("secondaryColor"),
-            "offenseRating":  int(row.get("offenseRating") or 75),
-            "defenseRating":  int(row.get("defenseRating") or 75),
-            "prestige":       int(row.get("prestige") or 50),
-            "state":          row.get("state", ""),
+            "name":           _str(row.get("name")),
+            "mascot":         _str(row.get("mascot")),
+            "abbreviation":   _str(row.get("abbreviation")),
+            "conferenceId":   _str(row.get("conferenceId")),
+            "primaryColor":   _str(row.get("primaryColor")) or orig.get("primaryColor"),
+            "secondaryColor": _str(row.get("secondaryColor")) or orig.get("secondaryColor"),
+            "offenseRating":  _int(row.get("offenseRating"), 75),
+            "defenseRating":  _int(row.get("defenseRating"), 75),
+            "prestige":       _int(row.get("prestige"), 50),
+            "state":          _str(row.get("state")),
             "pipelineStates": [s.strip() for s in ps_raw.split(",") if s.strip()],
-            "logoUrl":        _val(row.get("logoUrl")) or orig.get("logoUrl") or "",
+            "logoUrl":        _str(row.get("logoUrl")) or _str(orig.get("logoUrl")),
         })
     return result
 
