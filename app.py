@@ -2036,6 +2036,7 @@ def render_data_pack():
     _local_folder_clean = _local_folder.strip().strip('"').strip("'") if _local_folder else ""
     _local_path = Path(_local_folder_clean) if _local_folder_clean else None
     if _local_path:
+        st.caption(f"Python sees: `{_local_path}`")
         if not _local_path.exists():
             st.warning(f"Path not found: `{_local_path}`")
             _local_pngs = []
