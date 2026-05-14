@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
+from supplements import TeamSupplement, merge_supplement, norm_name as _supp_norm
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -58,6 +60,27 @@ PRESTIGE_WEIGHTS = [0.26,    0.20,    0.15,    0.11,    0.08,    0.06,    0.05, 
 # ^ sums to 1.0; most-recent year weighted most heavily
 
 EXCLUDE_ZERO_RECORD = True   # drop teams with 0 overall games (conference ghosts)
+
+# Secondary logo sources: state code → source identifier.
+# When a team's MaxPreps logo is absent, the named source is tried as a fallback.
+SECONDARY_LOGO_SOURCES: dict[str, str] = {
+    "mn": "mshsl",
+}
+
+# Supplemental data sources per state.
+# Each adapter returns {normalised_name → TeamSupplement} with better records,
+# section assignments, QRF ratings, and logo URLs.
+# Multiple sources per state are merged in order (later entries win on conflict).
+SUPPLEMENTAL_SOURCES: dict[str, list[str]] = {
+    "mn": ["mn_scores"],
+}
+
+# Conference-specific external standings (manual config).
+# Maps MaxPreps leagueId → URL of a page that has a standings table.
+# Used to supplement conference W/L records; record_type will be "conference".
+CONF_EXTERNAL_STANDINGS: dict[str, str] = {
+    "3848a71f-1457-4a4d-8a84-b7eb5197c5a8": "https://mcacathletics.org/boysbasketball/standings/",
+}
 
 BASE_URL   = "https://www.maxpreps.com"
 CACHE_DIR  = Path(".scrape_cache")
@@ -351,92 +374,186 @@ def to_prestige(norm: float) -> int:
 
 # ── Conference Standing Inference ─────────────────────────────────────────────
 
-def _interpolate_positions(known: list[tuple[int, float]], total: int) -> list[float]:
+def _interpolate_positions(
+    known:     list[tuple[int, float]],
+    total:     int,
+    win_rates: list[float] | None = None,
+) -> list[float]:
     """
-    Given [(position, score), ...] for ranked teams (position 0 = best),
-    return a score for every position 0..total-1 via interpolation/extrapolation.
-    Scores are bounded to [0, 1].
+    Given [(position, score), ...] for state-ranked teams (position 0 = best),
+    return a score for every position 0..total-1.  Scores are bounded to [0, 1].
+
+    When win_rates is supplied (one entry per position, each in [0, 1]):
+      • ≥2 known teams: fit a line through (win_rate, score) via least squares,
+        then predict every position from its win rate.  This grounds unranked
+        teams in their actual performance rather than assuming uniform quality
+        gaps between standings positions.
+      • 1 known team: anchor at that point with an empirical slope of 1.0.
+      • Degenerate (all win rates identical): fall back to position interpolation.
+
+    Without win_rates the legacy position-based interpolation/extrapolation is
+    used (kept as fallback for states without supplemental record data).
     """
     if not known:
+        if win_rates:
+            # No ranked peers at all; estimate from win rate around the median
+            return [max(0.0, min(1.0, 0.35 + (w - 0.5))) for w in win_rates]
         return [0.35] * total
 
-    known  = sorted(known)
-    result: list[float | None] = [None] * total
+    known = sorted(known)
 
+    # ── Win-rate regression ────────────────────────────────────────────────────
+    if win_rates and len(win_rates) == total:
+        xs = [win_rates[pos] for pos, _ in known]
+        ys = [score          for _, score in known]
+
+        if len(known) >= 2:
+            mx   = sum(xs) / len(xs)
+            my   = sum(ys) / len(ys)
+            var  = sum((x - mx) ** 2 for x in xs)
+            if var > 1e-6:                         # non-degenerate
+                a = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+                b = my - a * mx
+                result = [max(0.0, min(1.0, a * win_rates[i] + b)) for i in range(total)]
+                for pos, score in known:           # pin exact values for ranked teams
+                    if 0 <= pos < total:
+                        result[pos] = score
+                return result
+            # All ranked teams have same win rate — fall through to position method
+
+        elif len(known) == 1:
+            anchor_pos, anchor_score = known[0]
+            aw = win_rates[anchor_pos]
+            result = [max(0.0, min(1.0, anchor_score + (win_rates[i] - aw)))
+                      for i in range(total)]
+            result[anchor_pos] = anchor_score
+            return result
+
+    # ── Legacy position-based interpolation / extrapolation ───────────────────
+    result_opt: list[float | None] = [None] * total
     for pos, score in known:
         if 0 <= pos < total:
-            result[pos] = score
+            result_opt[pos] = score
 
-    # Interpolate between consecutive known points
     for i in range(len(known) - 1):
         p1, s1 = known[i]
         p2, s2 = known[i + 1]
         for j in range(p1 + 1, p2):
             t = (j - p1) / (p2 - p1)
-            result[j] = s1 + t * (s2 - s1)
+            result_opt[j] = s1 + t * (s2 - s1)
 
-    # Extrapolate above the best known team
     first_p, first_s = known[0]
     if first_p > 0:
         step = ((first_s - known[1][1]) / (known[1][0] - first_p)
                 if len(known) > 1 else 0.04)
         step = max(step, 0.01)
         for j in range(first_p - 1, -1, -1):
-            result[j] = min(1.0, first_s + step * (first_p - j))
+            result_opt[j] = min(1.0, first_s + step * (first_p - j))
 
-    # Extrapolate below the worst known team
     last_p, last_s = known[-1]
     if last_p < total - 1:
         step = ((known[-2][1] - last_s) / (last_p - known[-2][0])
                 if len(known) > 1 else 0.04)
         step = max(step, 0.01)
         for j in range(last_p + 1, total):
-            result[j] = max(0.0, last_s - step * (j - last_p))
+            result_opt[j] = max(0.0, last_s - step * (j - last_p))
 
-    return [float(r) if r is not None else 0.35 for r in result]
+    return [float(r) if r is not None else 0.35 for r in result_opt]
+
+
+def _best_conf_record(
+    team: "TeamConf",
+    supp: TeamSupplement | None,
+) -> tuple[int, int]:
+    """
+    Return the conference/section win-loss record with the most games.
+    Uses the supplement's conf record when it has more games than MaxPreps
+    AND shares the same record_type as the MaxPreps conference (i.e. both
+    are "conference" records, not section records).
+    For section-type supplements the section record is intentionally ignored
+    here — it covers a different set of opponents from the MaxPreps conference.
+    """
+    mp_w, mp_l = team.conf_wins, team.conf_losses
+    if (supp is not None
+            and supp.record_type == "conference"
+            and supp.conf_wins  is not None
+            and supp.conf_losses is not None):
+        supp_total = supp.conf_wins + supp.conf_losses
+        if supp_total > mp_w + mp_l:
+            return supp.conf_wins, supp.conf_losses
+    return mp_w, mp_l
+
+
+def _lookup_supp(
+    team: "TeamConf",
+    supplements: dict[str, TeamSupplement],
+) -> TeamSupplement | None:
+    """Look up a team's supplement by normalised name; try token-overlap fallback."""
+    norm = _supp_norm(team.name)
+    if norm in supplements:
+        return supplements[norm]
+    # Partial-match fallback (handles short abbreviations / extra words)
+    tokens = set(norm.split())
+    for key, supp in supplements.items():
+        key_tokens = set(key.split())
+        shared = tokens & key_tokens
+        shorter = min(len(tokens), len(key_tokens))
+        if shorter >= 2 and len(shared) >= shorter:
+            return supp
+    return None
 
 
 def infer_conference_scores(
-    conf_teams: list[TeamConf],
+    conf_teams:  list["TeamConf"],
     state_norm:  dict[str, float],
-    rankings:    dict[str, Ranking],
+    rankings:    dict[str, "Ranking"],
+    supplements: dict[str, TeamSupplement] | None = None,
 ) -> dict[str, float | None]:
     """
     Returns {team_slug: normalized_score [0,1]} for every team in the conference.
     slug → None means the team should be excluded (0 games played).
+
+    When supplements are provided, conference win rates are computed from the
+    better of the MaxPreps record and the supplement's same-conference record,
+    then passed to _interpolate_positions for win-rate-based regression instead
+    of position-based extrapolation.
     """
+    supplements = supplements or {}
     result: dict[str, float | None] = {}
 
     # Partition into active (have played at least 1 game) and ghost (0-0)
-    active: list[TeamConf] = []
+    active: list["TeamConf"] = []
     for t in conf_teams:
         if EXCLUDE_ZERO_RECORD and (t.ovr_wins + t.ovr_losses) == 0:
-            result[t.slug] = None   # exclude
+            result[t.slug] = None
         else:
             active.append(t)
 
     if not active:
         return result
 
-    # Sort active teams by page_order (conference standings order from MaxPreps)
     active.sort(key=lambda t: t.page_order)
     n = len(active)
 
-    # For each team, attempt to look up their normalized score from state rankings
+    # Build win-rate list for all active teams (used by regression interpolation)
+    win_rates: list[float] = []
+    for t in active:
+        supp   = _lookup_supp(t, supplements)
+        cw, cl = _best_conf_record(t, supp)
+        total  = cw + cl
+        win_rates.append(cw / total if total > 0 else 0.5)
+
+    # Identify ranked teams
     known: list[tuple[int, float]] = []
     for i, t in enumerate(active):
         r = match_ranking(t.slug, t.name, rankings)
         if r is not None and r.slug in state_norm:
-            # For fuzzy matches (slug containment or name overlap) only: reject if
-            # win rates diverge by >50pp — guards against a 0-25 team inheriting a
-            # 20-5 team's score due to a false positive match.
-            # Skip the check for exact slug matches — same slug = same school.
-            if r.slug != t.slug:
+            if r.slug != t.slug:   # fuzzy match — validate with win-rate guard
                 conf_total = t.ovr_wins + t.ovr_losses
                 rank_total = r.wins + r.losses
                 if conf_total >= 5 and rank_total >= 5:
-                    conf_rate = t.ovr_wins / conf_total
-                    rank_rate = r.wins / rank_total
+                    conf_rate  = t.ovr_wins / conf_total
+                    rank_rate  = r.wins / rank_total
                     if abs(conf_rate - rank_rate) > 0.50:
                         r = None
         if r is not None and r.slug in state_norm:
@@ -444,8 +561,7 @@ def infer_conference_scores(
         else:
             print(f"      [no ranking match] {t.name}  slug={t.slug}  ({t.ovr_wins}-{t.ovr_losses})")
 
-    # Get interpolated scores for all positions
-    scores = _interpolate_positions(known, n)
+    scores = _interpolate_positions(known, n, win_rates=win_rates)
 
     for i, t in enumerate(active):
         result[t.slug] = scores[i]
@@ -901,6 +1017,46 @@ def build_conf(conf: dict, team_entries: list[dict]) -> dict:
     }
 
 
+# ── Secondary logo sources ────────────────────────────────────────────────────
+
+def fill_secondary_logos(state: str, team_entries: list[dict]) -> int:
+    """Fill missing logoUrls from a state-specific secondary source.
+    Mutates team_entries in place. Returns the number of entries filled."""
+    source = SECONDARY_LOGO_SOURCES.get(state.lower())
+    if not source:
+        return 0
+    missing = [e for e in team_entries if not e.get("logoUrl")]
+    if not missing:
+        return 0
+
+    if source == "mshsl":
+        try:
+            import scrape_mshsl as _mshsl
+        except ImportError:
+            print("  [warn] scrape_mshsl.py not found — skipping MSHSL logo fallback")
+            return 0
+
+        session = _mshsl._session()
+        print(f"  MSHSL fallback: fetching school list for {len(missing)} teams…")
+        school_list = _mshsl.fetch_school_list(session)
+        print(f"    {len(school_list)} schools indexed")
+
+        filled = 0
+        for entry in missing:
+            slug = _mshsl.find_match(entry["name"], school_list)
+            if not slug:
+                continue
+            url = _mshsl.fetch_logo_url(slug, session)
+            if url:
+                entry["logoUrl"] = url
+                filled += 1
+                print(f"    {entry['name']} → {url}")
+        print(f"  MSHSL: filled {filled}/{len(missing)} missing logos")
+        return filled
+
+    return 0
+
+
 # ── Main Orchestration ────────────────────────────────────────────────────────
 
 def scrape_state(state: str) -> dict:
@@ -935,7 +1091,24 @@ def scrape_state(state: str) -> dict:
     current_rankings = all_rankings[CURRENT_SEASON]
     current_norm     = season_norms[CURRENT_SEASON]
 
-    # 5. Build team and conference entries
+    # 5. Fetch supplemental data (state-specific secondary sources)
+    supplements: dict[str, TeamSupplement] = {}
+    for src_name in SUPPLEMENTAL_SOURCES.get(state.lower(), []):
+        if src_name == "mn_scores":
+            try:
+                import scrape_mn_scores as _mn_scores
+                print(f"  Fetching mn-scores supplements…")
+                mn_supp = _mn_scores.fetch(CURRENT_SEASON)
+                for norm, s in mn_supp.items():
+                    supplements[norm] = (
+                        merge_supplement(supplements[norm], s)
+                        if norm in supplements else s
+                    )
+            except ImportError:
+                print("  [warn] scrape_mn_scores.py not found — skipping")
+        # Future sources: elif src_name == "other_source": ...
+
+    # 6. Build team and conference entries
     all_team_entries: list[dict] = []
     all_conf_entries: list[dict] = []
 
@@ -943,7 +1116,9 @@ def scrape_state(state: str) -> dict:
         conf_teams = conf_teams_map.get(conf["id"], [])
 
         # Infer a current-season [0,1] score for every active team in the conference
-        conf_scores = infer_conference_scores(conf_teams, current_norm, current_rankings)
+        conf_scores = infer_conference_scores(
+            conf_teams, current_norm, current_rankings, supplements=supplements
+        )
 
         team_entries: list[dict] = []
         for t in conf_teams:
@@ -963,7 +1138,7 @@ def scrape_state(state: str) -> dict:
             all_conf_entries.append(build_conf(conf, team_entries))
             all_team_entries.extend(team_entries)
 
-    # 6. Sort: conferences by name, teams by conference name then team name
+    # 7. Sort: conferences by name, teams by conference name then team name
     all_conf_entries.sort(key=lambda c: c["name"].lower())
     name_map = {c["id"]: c["name"] for c in all_conf_entries}
     all_team_entries.sort(key=lambda t: (
@@ -976,6 +1151,9 @@ def scrape_state(state: str) -> dict:
         if (t.ovr_wins + t.ovr_losses) == 0
     )
     print(f"  -> {len(all_team_entries)} teams included, {excluded} zero-game entries excluded")
+
+    # 8. Fill missing logo URLs from secondary sources (e.g. MSHSL for MN)
+    fill_secondary_logos(state, all_team_entries)
 
     return {
         "meta": {

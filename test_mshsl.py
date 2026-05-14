@@ -60,23 +60,31 @@ def inspect_listing():
     soup = BeautifulSoup(r.text, "html.parser")
     print(f"Title: {soup.title.string if soup.title else 'N/A'}")
 
-    # Look for school links
+    # Look for school links and any imgs nearby (logo on listing row?)
     school_links = [
-        a["href"] for a in soup.find_all("a", href=True)
-        if "/schools/" in a["href"] and a["href"] != "/schools"
+        a for a in soup.find_all("a", href=True)
+        if re.match(r"^/schools/[^/?#]+$", a["href"])
     ]
     print(f"\n  Found {len(school_links)} /schools/ links")
-    for lnk in school_links[:20]:
-        print(f"    {lnk}")
+    print("\n  First 10 entries — link + any nearby img:")
+    for a in school_links[:10]:
+        slug = a["href"].split("/schools/")[1]
+        # Check parent elements up to 3 levels for an img
+        img_src = ""
+        node = a
+        for _ in range(4):
+            node = node.parent
+            if node is None:
+                break
+            img = node.find("img")
+            if img:
+                img_src = img.get("src", "")
+                break
+        print(f"    {slug:<45}  img={img_src!r}")
 
-    # Look for any JSON data embedded in the page
-    scripts = soup.find_all("script")
-    for s in scripts:
-        txt = s.string or ""
-        if "school" in txt.lower() and len(txt) > 100:
-            # Print a preview
-            preview = txt.strip()[:400]
-            print(f"\n  Script with 'school' data:\n    {preview}\n    ...")
+    # Pagination: look for next-page links
+    next_links = [a["href"] for a in soup.find_all("a", href=True) if "page=" in a["href"]]
+    print(f"\n  Pagination links found: {next_links[:5]}")
 
 
 if __name__ == "__main__":

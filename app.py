@@ -129,6 +129,18 @@ def _remove_white_bg(png_bytes: bytes, tolerance: int = 30, remove_enclosed: boo
     return out.getvalue()
 
 
+def _pad_to_square(png_bytes: bytes) -> bytes:
+    """Expand a logo to a square canvas by adding transparent padding, centered."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    w, h = img.size
+    size = max(w, h)
+    square = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    square.paste(img, ((size - w) // 2, (size - h) // 2))
+    out = io.BytesIO()
+    square.save(out, format="PNG")
+    return out.getvalue()
+
+
 def _is_clean(text: str) -> bool:
     return not _profanity.contains_profanity(text)
 
@@ -1967,6 +1979,10 @@ def render_data_pack():
             help="Also removes near-white regions fully enclosed by non-transparent pixels. "
                  "Don't use if logos have intentional white inside a coloured shape.",
         )
+        _dl_pad_square = st.checkbox(
+            "Pad to square", value=False, key="dp_logo_dl_pad",
+            help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
+        )
         if st.button("Build ZIP", key="dp_logo_zip_btn"):
             _logo_rows = _teams_for_logos[
                 _teams_for_logos["state"] == _logo_state
@@ -1987,6 +2003,8 @@ def render_data_pack():
                             _png = _resp.content
                             if _dl_remove_bg:
                                 _png = _remove_white_bg(_png, remove_enclosed=_dl_remove_enc)
+                            if _dl_pad_square:
+                                _png = _pad_to_square(_png)
                             _zf.writestr(
                                 f"{_logo_state.lower()}/{_row['id']}.png",
                                 _png,
@@ -2005,6 +2023,49 @@ def render_data_pack():
                 file_name=f"{_logo_state.lower()}_logos.zip",
                 mime="application/zip",
                 key="dp_logo_zip_dl",
+            )
+
+    st.divider()
+    st.subheader("Process Local PNGs")
+    st.caption("Upload a folder of PNGs, apply adjustments, and download the results as a ZIP.")
+
+    _local_files = st.file_uploader(
+        "Upload PNGs", type="png", accept_multiple_files=True, key="dp_local_png_upload",
+    )
+    if _local_files:
+        _local_remove_bg = st.checkbox(
+            "Remove background", value=False, key="dp_local_rmbg",
+            help="BFS from all image edges using the auto-detected background colour.",
+        )
+        _local_remove_enc = st.checkbox(
+            "Remove enclosed white (letter counters)", value=False, key="dp_local_enc",
+            help="Also removes near-white regions fully enclosed by non-transparent pixels.",
+        )
+        _local_pad_square = st.checkbox(
+            "Pad to square", value=True, key="dp_local_pad",
+            help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
+        )
+        if st.button("Process & Build ZIP", key="dp_local_zip_btn"):
+            _local_buf = io.BytesIO()
+            _local_prog = st.progress(0.0, text="Processing…")
+            _local_total = len(_local_files)
+            with zipfile.ZipFile(_local_buf, "w", zipfile.ZIP_STORED) as _zf:
+                for _li, _uf in enumerate(_local_files):
+                    _local_prog.progress((_li + 1) / _local_total, text=f"{_li + 1}/{_local_total} — {_uf.name}")
+                    _png = _uf.read()
+                    if _local_remove_bg:
+                        _png = _remove_white_bg(_png, remove_enclosed=_local_remove_enc)
+                    if _local_pad_square:
+                        _png = _pad_to_square(_png)
+                    _zf.writestr(_uf.name, _png)
+            _local_prog.empty()
+            _local_buf.seek(0)
+            st.download_button(
+                label=f"Download processed_{_local_total}_logos.zip",
+                data=_local_buf,
+                file_name=f"processed_{_local_total}_logos.zip",
+                mime="application/zip",
+                key="dp_local_zip_dl",
             )
 
     st.divider()
