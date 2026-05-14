@@ -2033,10 +2033,22 @@ def render_data_pack():
     _local_folder = st.text_input(
         "Folder path", placeholder=r"C:\path\to\logos\mn", key="dp_local_folder",
     )
-    _local_pngs = sorted(Path(_local_folder).glob("*.png")) if _local_folder and Path(_local_folder).is_dir() else []
-    if _local_folder and not _local_pngs:
-        st.warning("No PNGs found at that path — check the folder path.")
-    elif _local_pngs:
+    _local_folder_clean = _local_folder.strip().strip('"').strip("'") if _local_folder else ""
+    _local_path = Path(_local_folder_clean) if _local_folder_clean else None
+    if _local_path:
+        if not _local_path.exists():
+            st.warning(f"Path not found: `{_local_path}`")
+            _local_pngs = []
+        elif not _local_path.is_dir():
+            st.warning(f"Not a folder: `{_local_path}`")
+            _local_pngs = []
+        else:
+            _local_pngs = sorted(_local_path.glob("*.png"))
+            if not _local_pngs:
+                st.warning(f"No PNGs found in `{_local_path}`")
+    else:
+        _local_pngs = []
+    if _local_pngs:
         st.caption(f"{len(_local_pngs)} PNG(s) found.")
         _local_remove_bg = st.checkbox(
             "Remove background", value=False, key="dp_local_rmbg",
