@@ -1819,8 +1819,15 @@ def render_data_pack():
         conf_name_to_id = {v: k for k, v in conf_id_to_name.items()}
         conf_name_options_all = [""] + sorted(conf_name_to_id.keys())
 
-        # Keep _conf_name in sync with conferenceId on every render
+        # Keep _conf_name in sync with conferenceId on every render.
+        # An uploaded CSV may have _conf_name but not conferenceId (since we hide that
+        # column from the editor/download), so reconstruct it first if missing.
         teams_df = teams_df.copy()
+        if "conferenceId" not in teams_df.columns:
+            if "_conf_name" in teams_df.columns:
+                teams_df["conferenceId"] = teams_df["_conf_name"].map(conf_name_to_id).fillna("")
+            else:
+                teams_df["conferenceId"] = ""
         teams_df["_conf_name"] = teams_df["conferenceId"].map(conf_id_to_name).fillna("")
         st.session_state["dp_teams"] = teams_df
 
