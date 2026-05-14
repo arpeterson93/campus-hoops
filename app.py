@@ -13,6 +13,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from collections import deque
 
 import pandas as pd
 import requests
@@ -33,14 +34,99 @@ st.title("Campus Hoops Mod Utility")
 
 # ================================================================== helpers
 
-def _remove_white_bg(png_bytes: bytes, tolerance: int = 30) -> bytes:
-    """Flood-fill from all four corners to remove connected white/near-white background."""
+def _remove_white_bg(png_bytes: bytes, tolerance: int = 30, remove_enclosed: bool = False) -> bytes:
+    """Remove background from a logo PNG.
+
+    Pass 1 (always): BFS from every edge pixel whose colour matches the auto-detected
+    background colour (median of all 4 border edges).  More robust than corner-only
+    flood-fill and handles non-white solid backgrounds (e.g. purple).
+
+    Pass 2 (opt-in): find near-white connected islands that are fully enclosed by
+    non-transparent pixels and make them transparent too.  Useful for letter-counter
+    holes (inside an O, P, R, etc.) but will also erase intentional enclosed white
+    (e.g. white text inside a coloured banner), so it is off by default.
+    """
+    import numpy as np
+
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    for corner in [(0, 0), (img.width - 1, 0), (0, img.height - 1), (img.width - 1, img.height - 1)]:
-        ImageDraw.floodfill(img, corner, (0, 0, 0, 0), thresh=tolerance)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    arr = np.array(img, dtype=np.uint8)
+    h, w = arr.shape[:2]
+
+    # Detect background colour from the median of all four border edges
+    border = np.concatenate([
+        arr[0, :, :3],
+        arr[h - 1, :, :3],
+        arr[1:h - 1, 0, :3],
+        arr[1:h - 1, w - 1, :3],
+    ])
+    bg = np.median(border, axis=0).astype(np.int16)
+
+    # Build a boolean mask: pixels whose colour is within `tolerance` of bg
+    bg_mask = (
+        (arr[:, :, 3] > 0) &
+        (np.abs(arr[:, :, 0].astype(np.int16) - bg[0]) <= tolerance) &
+        (np.abs(arr[:, :, 1].astype(np.int16) - bg[1]) <= tolerance) &
+        (np.abs(arr[:, :, 2].astype(np.int16) - bg[2]) <= tolerance)
+    )
+
+    # Pass 1: BFS from every edge pixel that matches the background colour
+    removed = np.zeros((h, w), dtype=bool)
+    queue: deque = deque()
+    for x in range(w):
+        for y in [0, h - 1]:
+            if bg_mask[y, x] and not removed[y, x]:
+                removed[y, x] = True
+                queue.append((y, x))
+    for y in range(1, h - 1):
+        for x in [0, w - 1]:
+            if bg_mask[y, x] and not removed[y, x]:
+                removed[y, x] = True
+                queue.append((y, x))
+    while queue:
+        cy, cx = queue.popleft()
+        arr[cy, cx, 3] = 0
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = cy + dy, cx + dx
+            if 0 <= ny < h and 0 <= nx < w and not removed[ny, nx] and bg_mask[ny, nx]:
+                removed[ny, nx] = True
+                queue.append((ny, nx))
+
+    # Pass 2 (opt-in): remove enclosed near-white islands (letter counter holes)
+    if remove_enclosed:
+        nw_thresh = 255 - tolerance
+        nw_mask = (
+            (arr[:, :, 3] > 0) &
+            (arr[:, :, 0] >= nw_thresh) &
+            (arr[:, :, 1] >= nw_thresh) &
+            (arr[:, :, 2] >= nw_thresh)
+        )
+        visited = arr[:, :, 3] == 0   # transparent pixels already handled
+        ys, xs = np.where(nw_mask & ~visited)
+        for sy, sx in zip(ys.tolist(), xs.tolist()):
+            if visited[sy, sx]:
+                continue
+            component: list[tuple[int, int]] = []
+            stack = [(sy, sx)]
+            visited[sy, sx] = True
+            touches_transparent = False
+            while stack:
+                cy, cx = stack.pop()
+                component.append((cy, cx))
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        if arr[ny, nx, 3] == 0:
+                            touches_transparent = True
+                        elif not visited[ny, nx] and nw_mask[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+            if not touches_transparent:
+                for cy, cx in component:
+                    arr[cy, cx, 3] = 0
+
+    out = io.BytesIO()
+    Image.fromarray(arr, "RGBA").save(out, format="PNG")
+    return out.getvalue()
 
 
 def _is_clean(text: str) -> bool:
@@ -969,15 +1055,22 @@ def render_teams():
 
             with col_up:
                 remove_bg = st.checkbox(
-                    "Remove white background", value=True, key=f"logo_rmbg_{selected_logo_tid}",
-                    help="Flood-fills from the image corners to make the white background transparent.",
+                    "Remove background", value=True, key=f"logo_rmbg_{selected_logo_tid}",
+                    help="BFS from all image edges using the auto-detected background colour. Handles white, off-white, and solid-colour backgrounds.",
+                )
+                remove_enclosed = st.checkbox(
+                    "Remove enclosed white (letter counters)", value=False,
+                    key=f"logo_enc_{selected_logo_tid}",
+                    help="Also removes near-white regions fully enclosed by non-transparent pixels (e.g. the hole inside an O, P, or R). Don't use if the logo has intentional white inside a coloured shape.",
                 )
                 uploaded_logo = st.file_uploader(
                     "Upload PNG", type=["png"], key=f"logo_up_{selected_logo_tid}",
                 )
                 if uploaded_logo is not None:
                     raw_bytes = uploaded_logo.getvalue()
-                    logo_edits[selected_logo_tid] = _remove_white_bg(raw_bytes) if remove_bg else raw_bytes
+                    if remove_bg:
+                        raw_bytes = _remove_white_bg(raw_bytes, remove_enclosed=remove_enclosed)
+                    logo_edits[selected_logo_tid] = raw_bytes
                     st.session_state["logo_edits"] = logo_edits
                 if selected_logo_tid in logo_edits:
                     if st.button("Remove staged logo", key=f"logo_rm_{selected_logo_tid}"):
@@ -986,10 +1079,14 @@ def render_teams():
                         st.rerun()
 
             st.divider()
-            if st.button("Remove white background from all logos", key="logo_rmbg_all"):
+            rmbg_all_enclosed = st.checkbox(
+                "Remove enclosed white (letter counters)", value=False, key="logo_rmbg_all_enc",
+                help="See per-logo option above.",
+            )
+            if st.button("Remove background from all logos", key="logo_rmbg_all"):
                 all_logos = {**existing_logos, **logo_edits}
                 for tid, logo_bytes in all_logos.items():
-                    logo_edits[tid] = _remove_white_bg(logo_bytes)
+                    logo_edits[tid] = _remove_white_bg(logo_bytes, remove_enclosed=rmbg_all_enclosed)
                 st.session_state["logo_edits"] = logo_edits
                 st.rerun()
 
@@ -1713,6 +1810,7 @@ def render_data_pack():
             _dp_csv_upload("dp_confs", editor_base_confs, "dp_csv_confs")
             if st.session_state.get("_csv_last_id_dp_csv_confs") != prev_last_confs:
                 st.session_state.pop(_confs_base_key, None)
+                st.rerun()
 
     with tab_teams:
         teams_df = st.session_state["dp_teams"]
@@ -1796,7 +1894,9 @@ def render_data_pack():
             prev_last = st.session_state.get(f"_csv_last_id_dp_csv_teams_{filter_id}")
             _dp_csv_upload("dp_teams", teams_df, f"dp_csv_teams_{filter_id}")
             if st.session_state.get(f"_csv_last_id_dp_csv_teams_{filter_id}") != prev_last:
-                st.session_state.pop(base_key, None)
+                for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_")]:
+                    del st.session_state[_k]
+                st.rerun()
 
     # ------------------------------------------------------------------ 3. Export
     st.subheader("3 · Export")
@@ -1823,6 +1923,65 @@ def render_data_pack():
     json_str = st.session_state["dp_json_output"]
     with st.expander(f"JSON output ({len(json_str):,} characters) — copy button is inside ↓"):
         st.code(json_str, language="json")
+
+    st.divider()
+    st.subheader("Download Logos")
+    st.caption("Fetch logos for one state and download as a ZIP ready to push to GitHub (`logos/{state}/slug.png`).")
+
+    _teams_for_logos = st.session_state.get("dp_teams")
+    if _teams_for_logos is not None and not _teams_for_logos.empty:
+        _states_available = sorted(_teams_for_logos["state"].dropna().unique().tolist())
+        _logo_state = st.selectbox(
+            "State", options=_states_available, key="dp_logo_state",
+        )
+        _dl_remove_bg = st.checkbox(
+            "Remove background", value=True, key="dp_logo_dl_rmbg",
+            help="BFS from all image edges using the auto-detected background colour.",
+        )
+        _dl_remove_enc = st.checkbox(
+            "Remove enclosed white (letter counters)", value=False, key="dp_logo_dl_enc",
+            help="Also removes near-white regions fully enclosed by non-transparent pixels. "
+                 "Don't use if logos have intentional white inside a coloured shape.",
+        )
+        if st.button("Build ZIP", key="dp_logo_zip_btn"):
+            _logo_rows = _teams_for_logos[
+                _teams_for_logos["state"] == _logo_state
+            ][["id", "logoUrl"]].dropna(subset=["logoUrl"])
+            _logo_rows = _logo_rows[_logo_rows["logoUrl"].str.strip() != ""]
+
+            _zip_buf = io.BytesIO()
+            _fetched = _skipped = 0
+            _prog = st.progress(0.0, text="Fetching logos…")
+            _total = len(_logo_rows)
+
+            with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_STORED) as _zf:
+                for _idx, (_i, _row) in enumerate(_logo_rows.iterrows()):
+                    _prog.progress((_idx + 1) / _total, text=f"{_idx + 1}/{_total} — {_row['id']}")
+                    try:
+                        _resp = requests.get(_row["logoUrl"], timeout=10)
+                        if _resp.status_code == 200:
+                            _png = _resp.content
+                            if _dl_remove_bg:
+                                _png = _remove_white_bg(_png, remove_enclosed=_dl_remove_enc)
+                            _zf.writestr(
+                                f"{_logo_state.lower()}/{_row['id']}.png",
+                                _png,
+                            )
+                            _fetched += 1
+                        else:
+                            _skipped += 1
+                    except Exception:
+                        _skipped += 1
+
+            _prog.empty()
+            _zip_buf.seek(0)
+            st.download_button(
+                label=f"Download {_logo_state.lower()}_logos.zip  ({_fetched} logos, {_skipped} skipped)",
+                data=_zip_buf,
+                file_name=f"{_logo_state.lower()}_logos.zip",
+                mime="application/zip",
+                key="dp_logo_zip_dl",
+            )
 
     st.divider()
     st.subheader("Post to Pastebin")

@@ -53,8 +53,8 @@ except ImportError:
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 CURRENT_SEASON   = "25-26"
-SEASONS_HISTORY  = ["25-26", "24-25", "23-24", "22-23", "21-22", "20-21", "19-20"]
-PRESTIGE_WEIGHTS = [0.30,    0.22,    0.17,    0.12,    0.09,    0.06,    0.04]
+SEASONS_HISTORY  = ["25-26", "24-25", "23-24", "22-23", "21-22", "20-21", "19-20", "18-19", "17-18", "16-17"]
+PRESTIGE_WEIGHTS = [0.26,    0.20,    0.15,    0.11,    0.08,    0.06,    0.05,    0.04,    0.03,    0.02]
 # ^ sums to 1.0; most-recent year weighted most heavily
 
 EXCLUDE_ZERO_RECORD = True   # drop teams with 0 overall games (conference ghosts)
@@ -129,6 +129,7 @@ class Ranking:
     wins:     int
     losses:   int
     city:     str = ""  # city slug from URL (e.g. "rochester")
+    rank:     int = 0   # 1-based state rank position; 0 = unknown
 
 
 # ── HTTP / Caching ─────────────────────────────────────────────────────────────
@@ -274,10 +275,19 @@ def match_ranking(
 ) -> "Ranking | None":
     """
     Find a Ranking for a conference team.
-    Priority: exact slug → slug containment (co-ops) → word-overlap name match.
+    Priority: exact slug → exact name → slug containment (co-ops) → word-overlap name match.
     """
     if conf_slug in rankings:
         return rankings[conf_slug]
+
+    # Exact normalized-name match — catches cases where the URL slug includes the
+    # mascot on one page but not the other (e.g. "st-michael-albertville-knights"
+    # vs "st-michael-albertville"), while both tables list the same school name.
+    norm_conf = _norm_name(conf_name)
+    if norm_conf:
+        for r in rankings.values():
+            if _norm_name(r.name) == norm_conf:
+                return r
 
     # Slug containment — only when the shorter slug is long enough to be distinctive
     # (avoids matching on short generic fragments like "north" or "st-paul")
@@ -287,7 +297,6 @@ def match_ranking(
             return r
 
     # Word-overlap name match — strip stopwords, require ≥ 2 content-word hits
-    norm_conf  = _norm_name(conf_name)
     conf_words = {w for w in norm_conf.split() if w not in _MATCH_STOPWORDS}
     if len(conf_words) < 2:
         return None     # too few distinctive words to match safely
@@ -315,7 +324,11 @@ def match_ranking(
 # ── Normalization ─────────────────────────────────────────────────────────────
 
 def normalize_state_rankings(rankings: dict[str, Ranking]) -> dict[str, float]:
-    """Map raw MaxPreps ratings to [0, 1] within the full state pool."""
+    """Map raw MaxPreps Rating values to [0, 1] within the state pool.
+
+    Using actual rating values (not rank position) means teams clustered at
+    the same rating receive the same normalized score.
+    """
     if not rankings:
         return {}
     vals = {s: r.rating for s, r in rankings.items()}
@@ -414,7 +427,22 @@ def infer_conference_scores(
     for i, t in enumerate(active):
         r = match_ranking(t.slug, t.name, rankings)
         if r is not None and r.slug in state_norm:
+            # For fuzzy matches (slug containment or name overlap) only: reject if
+            # win rates diverge by >50pp — guards against a 0-25 team inheriting a
+            # 20-5 team's score due to a false positive match.
+            # Skip the check for exact slug matches — same slug = same school.
+            if r.slug != t.slug:
+                conf_total = t.ovr_wins + t.ovr_losses
+                rank_total = r.wins + r.losses
+                if conf_total >= 5 and rank_total >= 5:
+                    conf_rate = t.ovr_wins / conf_total
+                    rank_rate = r.wins / rank_total
+                    if abs(conf_rate - rank_rate) > 0.50:
+                        r = None
+        if r is not None and r.slug in state_norm:
             known.append((i, state_norm[r.slug]))
+        else:
+            print(f"      [no ranking match] {t.name}  slug={t.slug}  ({t.ovr_wins}-{t.ovr_losses})")
 
     # Get interpolated scores for all positions
     scores = _interpolate_positions(known, n)
@@ -533,7 +561,7 @@ def _walk_rankings(node, url_pat: re.Pattern, out: list[Ranking], depth: int):
     if isinstance(node, dict):
         url    = node.get("url") or node.get("schoolUrl") or node.get("teamUrl") or ""
         name   = (node.get("name") or node.get("schoolName") or node.get("teamName") or "").strip()
-        rating = node.get("rating") or node.get("overallRating")
+        rating = node.get("overallRating") or node.get("rating")
         m = url_pat.search(url)
         if m and name and len(name) > 1 and rating is not None:
             try:
@@ -542,11 +570,13 @@ def _walk_rankings(node, url_pat: re.Pattern, out: list[Ranking], depth: int):
                 )
                 rec = str(node.get("overallRecord") or node.get("record") or "0-0")
                 w, l = _parse_record(rec)
+                rank_num = int(node.get("rank") or node.get("ranking") or node.get("teamRank") or 0)
                 out.append(Ranking(
                     slug=m.group(2), name=name,
                     rating=float(rating), strength=strength,
                     wins=w, losses=l,
                     city=m.group(1),
+                    rank=rank_num,
                 ))
             except (ValueError, TypeError):
                 pass
@@ -589,27 +619,29 @@ def _rankings_from_html(html: str, state: str) -> list[Ranking]:
             continue
         seen.add(slug)
 
-        name = link.get_text(separator=" ", strip=True)
-        row_text = row.get_text(" ")
+        name  = link.get_text(separator=" ", strip=True)
+        cells = row.find_all("td")
 
-        # Pull out all floats in the row; Rating and Strength are the last two floats
-        floats = []
-        for tok in row_text.split():
-            try:
-                floats.append(float(tok))
-            except ValueError:
-                pass
-
-        if not floats:
+        # Column order: # | Team | Ovr. | Rating | Str. | +/-
+        # Use cell positions directly — avoids float-scanning ambiguity from the +/- column.
+        if len(cells) < 5:
             continue
-        rating   = floats[-2] if len(floats) >= 2 else floats[-1]
-        strength = floats[-1] if len(floats) >= 2 else 0.0
+        try:
+            rating   = float(cells[3].get_text(strip=True))
+            strength = float(cells[4].get_text(strip=True))
+        except ValueError:
+            continue
 
+        row_text = row.get_text(" ")
         rec_m = re.search(r"(\d+)\s*[-–]\s*(\d+)", row_text)
         w, l  = (int(rec_m.group(1)), int(rec_m.group(2))) if rec_m else (0, 0)
+        try:
+            rank_num = int(cells[0].get_text(strip=True))
+        except ValueError:
+            rank_num = 0
 
         out.append(Ranking(slug=slug, name=name, rating=rating, strength=strength,
-                           wins=w, losses=l, city=m.group(1)))
+                           wins=w, losses=l, city=m.group(1), rank=rank_num))
     return out
 
 
@@ -629,7 +661,10 @@ def scrape_all_rankings(state: str, season: str) -> dict[str, Ranking]:
         if not entries:
             break
         for e in entries:
-            result[e.slug] = e
+            if e.slug not in result:    # first occurrence preserves page order = rank order
+                if e.rank == 0:
+                    e.rank = len(result) + 1   # sequential fallback if JSON had no rank field
+                result[e.slug] = e
         if len(entries) < 25:           # last page is always shorter
             break
     return result
@@ -754,7 +789,8 @@ def scrape_conferences(state: str) -> list[dict]:
 
     soup    = BeautifulSoup(html, "html.parser")
     pattern = re.compile(
-        rf"^/{re.escape(state)}/basketball/\d{{2}}-\d{{2}}/conference/([^/?#]+)",
+        rf"^/{re.escape(state)}/basketball/\d{{2}}-\d{{2}}"
+        r"/(?:conference|region|district|section|division)/([^/?#]+)",
         re.IGNORECASE,
     )
     seen:  set[str]   = set()
@@ -923,8 +959,9 @@ def scrape_state(state: str) -> dict:
             entry = build_team(t, conf["id"], state, od_norm, p_norm)
             team_entries.append(entry)
 
-        all_conf_entries.append(build_conf(conf, team_entries))
-        all_team_entries.extend(team_entries)
+        if team_entries:
+            all_conf_entries.append(build_conf(conf, team_entries))
+            all_team_entries.extend(team_entries)
 
     # 6. Sort: conferences by name, teams by conference name then team name
     all_conf_entries.sort(key=lambda c: c["name"].lower())
