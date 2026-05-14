@@ -1455,6 +1455,8 @@ def _dp_csv_upload(state_key: str, reference_df: pd.DataFrame, upload_key: str):
         if st.session_state.get(last_key) != file_id:
             try:
                 new_df = pd.read_csv(uploaded_csv)
+                for col in new_df.select_dtypes(include="object").columns:
+                    new_df[col] = new_df[col].fillna("")
                 for col in new_df.columns:
                     if col in reference_df.columns:
                         try:
