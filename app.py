@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import zipfile
 from collections import deque
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -2027,12 +2028,16 @@ def render_data_pack():
 
     st.divider()
     st.subheader("Process Local PNGs")
-    st.caption("Upload a folder of PNGs, apply adjustments, and download the results as a ZIP.")
+    st.caption("Point to a local folder of PNGs, apply adjustments, and download the results as a ZIP.")
 
-    _local_files = st.file_uploader(
-        "Upload PNGs", type="png", accept_multiple_files=True, key="dp_local_png_upload",
+    _local_folder = st.text_input(
+        "Folder path", placeholder=r"C:\path\to\logos\mn", key="dp_local_folder",
     )
-    if _local_files:
+    _local_pngs = sorted(Path(_local_folder).glob("*.png")) if _local_folder and Path(_local_folder).is_dir() else []
+    if _local_folder and not _local_pngs:
+        st.warning("No PNGs found at that path — check the folder path.")
+    elif _local_pngs:
+        st.caption(f"{len(_local_pngs)} PNG(s) found.")
         _local_remove_bg = st.checkbox(
             "Remove background", value=False, key="dp_local_rmbg",
             help="BFS from all image edges using the auto-detected background colour.",
@@ -2048,16 +2053,16 @@ def render_data_pack():
         if st.button("Process & Build ZIP", key="dp_local_zip_btn"):
             _local_buf = io.BytesIO()
             _local_prog = st.progress(0.0, text="Processing…")
-            _local_total = len(_local_files)
+            _local_total = len(_local_pngs)
             with zipfile.ZipFile(_local_buf, "w", zipfile.ZIP_STORED) as _zf:
-                for _li, _uf in enumerate(_local_files):
-                    _local_prog.progress((_li + 1) / _local_total, text=f"{_li + 1}/{_local_total} — {_uf.name}")
-                    _png = _uf.read()
+                for _li, _lp in enumerate(_local_pngs):
+                    _local_prog.progress((_li + 1) / _local_total, text=f"{_li + 1}/{_local_total} — {_lp.name}")
+                    _png = _lp.read_bytes()
                     if _local_remove_bg:
                         _png = _remove_white_bg(_png, remove_enclosed=_local_remove_enc)
                     if _local_pad_square:
                         _png = _pad_to_square(_png)
-                    _zf.writestr(_uf.name, _png)
+                    _zf.writestr(_lp.name, _png)
             _local_prog.empty()
             _local_buf.seek(0)
             st.download_button(
