@@ -2036,12 +2036,16 @@ def render_data_pack():
     _local_folder_clean = _local_folder.strip().strip('"').strip("'") if _local_folder else ""
     _local_pngs = []
     if _local_folder_clean:
-        import glob as _glob
-        _local_pngs = sorted(Path(p) for p in _glob.glob(_local_folder_clean + "/*.png"))
-        if not _local_pngs:
-            _local_pngs = sorted(Path(p) for p in _glob.glob(_local_folder_clean + "\\*.png"))
-        if not _local_pngs:
-            st.warning(f"No PNGs found at: `{_local_folder_clean}`")
+        try:
+            _all_entries = os.listdir(_local_folder_clean)
+            _local_pngs = sorted(
+                Path(_local_folder_clean) / f
+                for f in _all_entries if f.lower().endswith(".png")
+            )
+            if not _local_pngs:
+                st.warning(f"No PNGs found in `{_local_folder_clean}` ({len(_all_entries)} total files)")
+        except Exception as _e:
+            st.error(f"Cannot read folder: {type(_e).__name__}: {_e}")
     if _local_pngs:
         st.caption(f"{len(_local_pngs)} PNG(s) found.")
         _local_remove_bg = st.checkbox(
