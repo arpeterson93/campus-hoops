@@ -82,6 +82,11 @@ CONF_EXTERNAL_STANDINGS: dict[str, str] = {
     "3848a71f-1457-4a4d-8a84-b7eb5197c5a8": "https://mcacathletics.org/boysbasketball/standings/",
 }
 
+# States that use a supplemental QRF metric instead of MaxPreps rankings for
+# offenseRating / defenseRating and prestige.  MaxPreps is still used as the
+# team roster skeleton and for logo / color data.
+QRF_STATES: set[str] = {"mn"}
+
 BASE_URL   = "https://www.maxpreps.com"
 CACHE_DIR  = Path(".scrape_cache")
 OUTPUT_DIR = Path("hs_packs")
@@ -372,12 +377,67 @@ def to_prestige(norm: float) -> int:
     return max(25, min(95, round(25 + norm * 70)))
 
 
+# ── QRF-based normalization helpers ───────────────────────────────────────────
+
+def _mp_to_mn_season(mp_season: str) -> str:
+    """Convert MaxPreps season slug to mn-scores format: '25-26' → '2025-2026'."""
+    a, b = mp_season.split("-")
+    return f"20{a}-20{b}"
+
+
+def _normalize_qrf(supp_map: dict) -> dict[str, float]:
+    """
+    Normalize QRF values within a season's supplement map to [0, 1] by value.
+    Teams with no QRF are excluded from the output.
+    """
+    qrf = {norm: s.rating for norm, s in supp_map.items() if s.rating is not None}
+    if not qrf:
+        return {}
+    mn, mx = min(qrf.values()), max(qrf.values())
+    span = mx - mn
+    if span == 0:
+        return {norm: 0.5 for norm in qrf}
+    return {norm: (v - mn) / span for norm, v in qrf.items()}
+
+
+def _qrf_lookup(team: "TeamConf", qrf_norms: dict[str, float]) -> float | None:
+    """Look up a team's QRF-based normalized score by name matching."""
+    tn = _supp_norm(team.name)
+    if tn in qrf_norms:
+        return qrf_norms[tn]
+    team_tokens = set(tn.split())
+    best_val, best_score = None, 0
+    for norm, val in qrf_norms.items():
+        tokens = set(norm.split())
+        inter  = team_tokens & tokens
+        shorter = min(len(team_tokens), len(tokens))
+        if shorter >= 2 and len(inter) == shorter and shorter > best_score:
+            best_score = shorter
+            best_val   = val
+    return best_val
+
+
+def _compute_qrf_prestige(
+    team: "TeamConf",
+    qrf_season_norms: dict[str, dict[str, float]],
+) -> float | None:
+    """Weighted average of QRF-based norms across SEASONS_HISTORY."""
+    total_w = total_s = 0.0
+    for season, weight in zip(SEASONS_HISTORY, PRESTIGE_WEIGHTS):
+        val = _qrf_lookup(team, qrf_season_norms.get(season, {}))
+        if val is not None:
+            total_s += val * weight
+            total_w += weight
+    return (total_s / total_w) if total_w > 1e-6 else None
+
+
 # ── Conference Standing Inference ─────────────────────────────────────────────
 
 def _interpolate_positions(
     known:     list[tuple[int, float]],
     total:     int,
     win_rates: list[float] | None = None,
+    qrf_mode:  bool = False,
 ) -> list[float]:
     """
     Given [(position, score), ...] for state-ranked teams (position 0 = best),
@@ -396,6 +456,11 @@ def _interpolate_positions(
     """
     if not known:
         if win_rates:
+            if qrf_mode:
+                # Conference has no QRF coverage (e.g., MACS private schools).
+                # Use a conservative baseline so teams outside the rated system
+                # can't reach elite scores via win rate alone. Caps near 75 overall.
+                return [max(0.0, min(0.50, 0.25 + (w - 0.5) * 0.5)) for w in win_rates]
             # No ranked peers at all; estimate from win rate around the median
             return [max(0.0, min(1.0, 0.35 + (w - 0.5))) for w in win_rates]
         return [0.35] * total
@@ -508,17 +573,19 @@ def infer_conference_scores(
     state_norm:  dict[str, float],
     rankings:    dict[str, "Ranking"],
     supplements: dict[str, TeamSupplement] | None = None,
+    qrf_norms:   dict[str, float] | None = None,
 ) -> dict[str, float | None]:
     """
     Returns {team_slug: normalized_score [0,1]} for every team in the conference.
     slug → None means the team should be excluded (0 games played).
 
-    When supplements are provided, conference win rates are computed from the
-    better of the MaxPreps record and the supplement's same-conference record,
-    then passed to _interpolate_positions for win-rate-based regression instead
-    of position-based extrapolation.
+    Known-point priority for regression anchors:
+      1. QRF norm (qrf_norms) when provided
+      2. MaxPreps ranking (state_norm) as fallback
+    Remaining teams are interpolated via win-rate regression from those anchors.
     """
     supplements = supplements or {}
+    qrf_norms   = qrf_norms or {}
     result: dict[str, float | None] = {}
 
     # Partition into active (have played at least 1 game) and ghost (0-0)
@@ -543,25 +610,36 @@ def infer_conference_scores(
         total  = cw + cl
         win_rates.append(cw / total if total > 0 else 0.5)
 
-    # Identify ranked teams
+    # Identify known-score teams: prefer QRF, fall back to MaxPreps.
+    # When QRF data is available for this state, skip the MaxPreps fallback —
+    # MaxPreps ratings for teams outside the QRF system (e.g., MACS private
+    # schools) are inflated by weak-opposition win rates and produce bad anchors.
     known: list[tuple[int, float]] = []
     for i, t in enumerate(active):
-        r = match_ranking(t.slug, t.name, rankings)
-        if r is not None and r.slug in state_norm:
-            if r.slug != t.slug:   # fuzzy match — validate with win-rate guard
-                conf_total = t.ovr_wins + t.ovr_losses
-                rank_total = r.wins + r.losses
-                if conf_total >= 5 and rank_total >= 5:
-                    conf_rate  = t.ovr_wins / conf_total
-                    rank_rate  = r.wins / rank_total
-                    if abs(conf_rate - rank_rate) > 0.50:
-                        r = None
-        if r is not None and r.slug in state_norm:
-            known.append((i, state_norm[r.slug]))
-        else:
-            print(f"      [no ranking match] {t.name}  slug={t.slug}  ({t.ovr_wins}-{t.ovr_losses})")
+        # 1. Try QRF first
+        qrf_score = _qrf_lookup(t, qrf_norms)
+        if qrf_score is not None:
+            known.append((i, qrf_score))
+            continue
 
-    scores = _interpolate_positions(known, n, win_rates=win_rates)
+        # 2. Fall back to MaxPreps ranking only when QRF is not available for
+        #    this state (qrf_norms empty).  In QRF mode, unmatched teams are
+        #    estimated from win-rate regression anchored by their QRF-rated peers.
+        if not qrf_norms:
+            r = match_ranking(t.slug, t.name, rankings)
+            if r is not None and r.slug in state_norm:
+                if r.slug != t.slug:   # fuzzy match — validate with win-rate guard
+                    conf_total = t.ovr_wins + t.ovr_losses
+                    rank_total = r.wins + r.losses
+                    if conf_total >= 5 and rank_total >= 5:
+                        conf_rate  = t.ovr_wins / conf_total
+                        rank_rate  = r.wins / rank_total
+                        if abs(conf_rate - rank_rate) > 0.50:
+                            r = None
+            if r is not None and r.slug in state_norm:
+                known.append((i, state_norm[r.slug]))
+
+    scores = _interpolate_positions(known, n, win_rates=win_rates, qrf_mode=bool(qrf_norms))
 
     for i, t in enumerate(active):
         result[t.slug] = scores[i]
@@ -1098,7 +1176,7 @@ def scrape_state(state: str) -> dict:
             try:
                 import scrape_mn_scores as _mn_scores
                 print(f"  Fetching mn-scores supplements…")
-                mn_supp = _mn_scores.fetch(CURRENT_SEASON)
+                mn_supp = _mn_scores.fetch(_mp_to_mn_season(CURRENT_SEASON))
                 for norm, s in mn_supp.items():
                     supplements[norm] = (
                         merge_supplement(supplements[norm], s)
@@ -1107,6 +1185,27 @@ def scrape_state(state: str) -> dict:
             except ImportError:
                 print("  [warn] scrape_mn_scores.py not found — skipping")
         # Future sources: elif src_name == "other_source": ...
+
+    # 5b. For QRF states, fetch historical seasons to build prestige from QRF
+    qrf_season_norms: dict[str, dict[str, float]] = {}
+    if state.lower() in QRF_STATES:
+        try:
+            import scrape_mn_scores as _mn_scores
+            print(f"  Fetching mn-scores QRF — {len(SEASONS_HISTORY)} seasons…")
+            for mp_season in SEASONS_HISTORY:
+                mn_season = _mp_to_mn_season(mp_season)
+                try:
+                    season_supp = _mn_scores.fetch(mn_season)
+                    qrf_norms   = _normalize_qrf(season_supp)
+                    if qrf_norms:
+                        qrf_season_norms[mp_season] = qrf_norms
+                        print(f"    {mn_season}: {len(qrf_norms)} QRF values")
+                    else:
+                        print(f"    {mn_season}: no QRF data")
+                except Exception as e:
+                    print(f"    [warn] {mn_season}: {e}")
+        except ImportError:
+            pass
 
     # 6. Build team and conference entries
     all_team_entries: list[dict] = []
@@ -1117,7 +1216,9 @@ def scrape_state(state: str) -> dict:
 
         # Infer a current-season [0,1] score for every active team in the conference
         conf_scores = infer_conference_scores(
-            conf_teams, current_norm, current_rankings, supplements=supplements
+            conf_teams, current_norm, current_rankings,
+            supplements=supplements,
+            qrf_norms=qrf_season_norms.get(CURRENT_SEASON) if qrf_season_norms else None,
         )
 
         team_entries: list[dict] = []
@@ -1126,8 +1227,12 @@ def scrape_state(state: str) -> dict:
             if od_norm is None:
                 continue    # excluded (0-0 record)
 
-            # Multi-year prestige; fall back to current-season score if no history
-            p_norm = compute_prestige_norm(t.slug, t.name, season_norms, all_rankings)
+            # Prestige: prefer QRF history; fall back to MaxPreps history
+            p_norm = None
+            if state.lower() in QRF_STATES and qrf_season_norms:
+                p_norm = _compute_qrf_prestige(t, qrf_season_norms)
+            if p_norm is None:
+                p_norm = compute_prestige_norm(t.slug, t.name, season_norms, all_rankings)
             if p_norm is None:
                 p_norm = od_norm
 
@@ -1154,6 +1259,16 @@ def scrape_state(state: str) -> dict:
 
     # 8. Fill missing logo URLs from secondary sources (e.g. MSHSL for MN)
     fill_secondary_logos(state, all_team_entries)
+
+    # 9. For teams that still have default colors, retry color extraction now
+    #    that logo URLs are finalised (MSHSL logos may have been added in step 8).
+    for entry in all_team_entries:
+        if entry.get("primaryColor") == "#888888" and entry.get("logoUrl"):
+            img_bytes = fetch_bytes(entry["logoUrl"])
+            if img_bytes:
+                primary, secondary = extract_colors(img_bytes)
+                entry["primaryColor"]   = primary
+                entry["secondaryColor"] = secondary
 
     return {
         "meta": {
