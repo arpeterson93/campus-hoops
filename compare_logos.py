@@ -68,6 +68,11 @@ DARK_CHROMA_FLOOR      = 0.05  # denominator floor so ratio doesn't explode near
 LOGO_OVERRIDES: dict[str, str] = {
     "331.png": "use dark",   # Eastern Washington — black parts invisible on dark bg
     "2649.png": "use dark",  # Toledo (rocket is a bit hidden in light logo)
+    "2084.png": "use regular",  # Buffalo
+    "179.png": "use dark",  # St. Bonaventure
+    "254.png": "use regular",  # Utah
+    "23.png": "use dark",  # San Jose St.
+    "2539.png": "use light",  # San Francisco
 }
 
 
