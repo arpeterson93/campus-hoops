@@ -45,6 +45,7 @@ st.markdown("""
 DATAPACK_ONLY = True
 
 st.title("Campus Hoops Mod Utility")
+st.subheader("Developed by Nalex13")
 
 
 # ================================================================== helpers
@@ -2008,9 +2009,17 @@ def render_data_pack():
                     for col, val in id_to_edit[tid].items():
                         new_full.at[idx, col] = val
             new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
+            conf_changed = not new_full["conferenceId"].reset_index(drop=True).equals(
+                teams_df["conferenceId"].reset_index(drop=True)
+            )
             st.session_state["dp_teams"] = new_full
             for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_")]:
                 del st.session_state[_k]
+            if conf_changed:
+                st.session_state["dp_confs"] = _dp_recalc_conf_prestige(
+                    st.session_state["dp_confs"], new_full
+                )
+                st.session_state.pop("_dp_confs_base", None)
 
         c1, c2 = st.columns(2)
         with c1:
