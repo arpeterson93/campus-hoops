@@ -2011,6 +2011,12 @@ def render_data_pack():
                         if col == "_conf_name" and val != row.get("_conf_name"):
                             conf_changed = True
                         new_full.at[idx, col] = val
+            # Remove rows deleted in this filter view
+            base_ids   = set(editor_base["id"].dropna()) if "id" in editor_base.columns else set()
+            edited_ids = set(edited_teams["id"].dropna()) if "id" in edited_teams.columns else set()
+            deleted_ids = base_ids - edited_ids
+            if deleted_ids:
+                new_full = new_full[~new_full["id"].isin(deleted_ids)].reset_index(drop=True)
             new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
             st.session_state["dp_teams"] = new_full
             for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_")]:
