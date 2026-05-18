@@ -1351,7 +1351,11 @@ _DP_TEAM_COLS = [
     "nilProfile", "nilTier", "nilMin", "nilBase", "nilMax",
 ]
 _DP_CONF_COLS = ["id", "name", "abbreviation", "isPower", "prestigeFloor", "prestigeCeiling", "logoUrl", "revShareTier"]
-_NIL_TIERS = ["", "S", "A", "B", "C", "D"]
+_NIL_TIERS    = ["", "S", "A", "B", "C", "D"]
+_NIL_PROFILES = [
+    "", "blueBloodTrad", "nilPowerhouse", "bbFocused",
+    "bbFocusedNonP5", "academicLowDonor",
+]
 _REV_SHARE_TIERS = ["", "S", "A", "B", "C", "D", "E", "F"]
 
 
@@ -1864,14 +1868,25 @@ def render_data_pack():
 
         confs_df = st.session_state["dp_confs"]
         st.caption(f"{len(confs_df)} conferences")
-        st.info(
-            "**Prestige Floor and Ceiling are auto-recalculated** whenever team conference "
-            "assignments change on the Teams tab.  \n"
-            "**Floor** = 70% of the min team prestige · "
-            "**Ceiling** = 115% of the max team prestige · "
-            "Both capped between 15–95 and rounded to the nearest 5.",
-            icon="ℹ️",
-        )
+        _info_col, _btn_col = st.columns([6, 1])
+        with _info_col:
+            st.info(
+                "**Prestige Floor and Ceiling are auto-recalculated** whenever team conference "
+                "assignments change on the Teams tab.  \n"
+                "**Floor** = 70% of the min team prestige · "
+                "**Ceiling** = 115% of the max team prestige · "
+                "Both capped between 15–95 and rounded to the nearest 5.",
+                icon="ℹ️",
+            )
+        with _btn_col:
+            if st.button("Refresh", key="dp_confs_refresh", use_container_width=True,
+                         help="Force-recalculate prestige floor/ceiling from current team data."):
+                _refreshed = _dp_recalc_conf_prestige(
+                    st.session_state["dp_confs"], st.session_state["dp_teams"]
+                )
+                st.session_state["dp_confs"] = _refreshed
+                st.session_state.pop("_dp_confs_base", None)
+                st.rerun()
         _max_games = raw.get("rules", {}).get("schedule", {}).get("gamesPerTeam")
         conf_col_cfg = {
             "id":               st.column_config.TextColumn("ID"),
@@ -1943,7 +1958,7 @@ def render_data_pack():
             "primaryColor":   st.column_config.TextColumn("Primary"),
             "secondaryColor": st.column_config.TextColumn("Secondary"),
             "logoUrl":        st.column_config.LinkColumn("Logo URL", display_text="link"),
-            "nilProfile":     st.column_config.TextColumn("NIL Profile"),
+            "nilProfile":     st.column_config.SelectboxColumn("NIL Profile", options=_NIL_PROFILES),
             "nilTier":        st.column_config.SelectboxColumn("NIL Tier", options=_NIL_TIERS),
             "nilMin":         st.column_config.NumberColumn("NIL Min", min_value=0),
             "nilBase":        st.column_config.NumberColumn("NIL Base", min_value=0),
