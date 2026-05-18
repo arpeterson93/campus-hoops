@@ -2003,15 +2003,15 @@ def render_data_pack():
         if not edited_teams.equals(editor_base):
             id_to_edit = edited_teams.set_index("id").to_dict("index")
             new_full = teams_df.copy()
+            conf_changed = False
             for idx, row in new_full.iterrows():
                 tid = row.get("id")
                 if tid and tid in id_to_edit:
                     for col, val in id_to_edit[tid].items():
+                        if col == "_conf_name" and val != row.get("_conf_name"):
+                            conf_changed = True
                         new_full.at[idx, col] = val
             new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
-            conf_changed = not new_full["conferenceId"].reset_index(drop=True).equals(
-                teams_df["conferenceId"].reset_index(drop=True)
-            )
             st.session_state["dp_teams"] = new_full
             for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_")]:
                 del st.session_state[_k]
@@ -2020,6 +2020,7 @@ def render_data_pack():
                     st.session_state["dp_confs"], new_full
                 )
                 st.session_state.pop("_dp_confs_base", None)
+                st.rerun()
 
         c1, c2 = st.columns(2)
         with c1:
