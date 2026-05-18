@@ -28,7 +28,22 @@ from save_loader import SaveFile
 
 _profanity.load_censor_words()
 
-st.set_page_config(page_title="Campus Hoops Mod Utility", layout="wide")
+st.set_page_config(
+    page_title="Campus Hoops Mod Utility",
+    layout="wide",
+    menu_items={},
+)
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+.stDeployButton {display: none !important;}
+[data-testid="stToolbarActions"] {display: none !important;}
+</style>
+""", unsafe_allow_html=True)
+
+# Set to True to show only the Data Pack page and hide save-file tooling.
+DATAPACK_ONLY = True
+
 st.title("Campus Hoops Mod Utility")
 
 
@@ -565,80 +580,83 @@ def _csv_upload_widget(page_key: str, reference_df: pd.DataFrame, key: str):
 
 # ================================================================== sidebar
 
-page = st.sidebar.radio(
-    "Page",
-    ["Data Pack", "Conferences", "Teams", "Rosters", "Coaches", "Recruiting Pool"],
-)
+if DATAPACK_ONLY:
+    page = "Data Pack"
+else:
+    page = st.sidebar.radio(
+        "Page",
+        ["Data Pack", "Conferences", "Teams", "Rosters", "Coaches", "Recruiting Pool"],
+    )
 
-with st.sidebar:
-    st.header("Save File")
-    uploaded = st.file_uploader("Upload save (.campushoops or .zip)")
+if not DATAPACK_ONLY:
+    with st.sidebar:
+        st.header("Save File")
+        uploaded = st.file_uploader("Upload save (.campushoops or .zip)")
 
-    if uploaded:
-        if not zipfile.is_zipfile(uploaded):
-            st.error("That file doesn't appear to be a valid save export.")
-            st.stop()
-        uploaded.seek(0)
-        raw_zip_bytes = uploaded.read()
+        if uploaded:
+            if not zipfile.is_zipfile(uploaded):
+                st.error("That file doesn't appear to be a valid save export.")
+                st.stop()
+            uploaded.seek(0)
+            raw_zip_bytes = uploaded.read()
 
-        upload_key = f"{uploaded.name}_{uploaded.size}"
-        if st.session_state.get("upload_key") != upload_key:
-            old_dir = st.session_state.get("temp_dir")
-            if old_dir and os.path.exists(old_dir):
-                shutil.rmtree(old_dir, ignore_errors=True)
+            upload_key = f"{uploaded.name}_{uploaded.size}"
+            if st.session_state.get("upload_key") != upload_key:
+                old_dir = st.session_state.get("temp_dir")
+                if old_dir and os.path.exists(old_dir):
+                    shutil.rmtree(old_dir, ignore_errors=True)
 
-            temp_dir = tempfile.mkdtemp()
-            with zipfile.ZipFile(io.BytesIO(raw_zip_bytes)) as zf:
-                zf.extractall(temp_dir)
+                temp_dir = tempfile.mkdtemp()
+                with zipfile.ZipFile(io.BytesIO(raw_zip_bytes)) as zf:
+                    zf.extractall(temp_dir)
 
-            save_root = _find_save_root(temp_dir)
-            st.session_state["upload_key"] = upload_key
-            st.session_state["temp_dir"] = temp_dir
-            st.session_state["save"] = SaveFile(save_root)
-            st.session_state["raw_zip"] = raw_zip_bytes
-            # Clear all edit state on new upload
-            st.session_state["page_edits"] = {}
-            st.session_state["raw_data"] = {}
-            st.session_state["dirty_pages"] = set()
-            st.session_state.pop("download_bytes", None)
-            st.session_state.pop("logo_edits", None)
-            st.session_state.pop("existing_logos", None)
+                save_root = _find_save_root(temp_dir)
+                st.session_state["upload_key"] = upload_key
+                st.session_state["temp_dir"] = temp_dir
+                st.session_state["save"] = SaveFile(save_root)
+                st.session_state["raw_zip"] = raw_zip_bytes
+                st.session_state["page_edits"] = {}
+                st.session_state["raw_data"] = {}
+                st.session_state["dirty_pages"] = set()
+                st.session_state.pop("download_bytes", None)
+                st.session_state.pop("logo_edits", None)
+                st.session_state.pop("existing_logos", None)
 
-    if "save" in st.session_state:
-        save: SaveFile = st.session_state["save"]
-        st.caption(
-            f"**{save.meta.get('teamName')}** — Season {save.meta.get('seasonYear')}\n\n"
-            f"Last saved: {save.meta.get('lastSaved', '')[:10]}"
-        )
-
-        st.divider()
-
-        dirty = st.session_state.get("dirty_pages", set())
-        if dirty:
-            st.warning(f"Unsaved edits on: {', '.join(sorted(dirty))}. "
-                       "Download your file before refreshing.")
-
-        if st.button("Build .campushoops", use_container_width=True,
-                     help="Applies all edits and compresses the save file for download."):
-            with st.spinner("Building…"):
-                _apply_all_edits(save)
-                st.session_state["download_bytes"] = save.to_campushoops_bytes(
-                    st.session_state["raw_zip"],
-                    logo_overrides=st.session_state.get("logo_edits") or None,
-                )
-
-        if "download_bytes" in st.session_state:
-            team_id = save.meta.get("teamId", "save")
-            st.download_button(
-                "Download .campushoops",
-                st.session_state["download_bytes"],
-                file_name=f"modified_{team_id}.campushoops",
-                mime="application/zip",
-                use_container_width=True,
-                type="primary",
+        if "save" in st.session_state:
+            save: SaveFile = st.session_state["save"]
+            st.caption(
+                f"**{save.meta.get('teamName')}** — Season {save.meta.get('seasonYear')}\n\n"
+                f"Last saved: {save.meta.get('lastSaved', '')[:10]}"
             )
-    else:
-        st.info("Upload your save file to begin.")
+
+            st.divider()
+
+            dirty = st.session_state.get("dirty_pages", set())
+            if dirty:
+                st.warning(f"Unsaved edits on: {', '.join(sorted(dirty))}. "
+                           "Download your file before refreshing.")
+
+            if st.button("Build .campushoops", use_container_width=True,
+                         help="Applies all edits and compresses the save file for download."):
+                with st.spinner("Building…"):
+                    _apply_all_edits(save)
+                    st.session_state["download_bytes"] = save.to_campushoops_bytes(
+                        st.session_state["raw_zip"],
+                        logo_overrides=st.session_state.get("logo_edits") or None,
+                    )
+
+            if "download_bytes" in st.session_state:
+                team_id = save.meta.get("teamId", "save")
+                st.download_button(
+                    "Download .campushoops",
+                    st.session_state["download_bytes"],
+                    file_name=f"modified_{team_id}.campushoops",
+                    mime="application/zip",
+                    use_container_width=True,
+                    type="primary",
+                )
+        else:
+            st.info("Upload your save file to begin.")
 
 
 # ================================================================== Recruiting Pool
@@ -1330,8 +1348,11 @@ def render_create_challenge():
 _DP_TEAM_COLS = [
     "id", "name", "mascot", "abbreviation", "conferenceId", "state", "pipelineStates",
     "offenseRating", "defenseRating", "prestige", "primaryColor", "secondaryColor", "logoUrl",
+    "nilProfile", "nilTier", "nilMin", "nilBase", "nilMax",
 ]
-_DP_CONF_COLS = ["id", "name", "abbreviation", "isPower", "prestigeFloor", "prestigeCeiling", "logoUrl"]
+_DP_CONF_COLS = ["id", "name", "abbreviation", "isPower", "prestigeFloor", "prestigeCeiling", "logoUrl", "revShareTier"]
+_NIL_TIERS = ["", "S", "A", "B", "C", "D"]
+_REV_SHARE_TIERS = ["", "S", "A", "B", "C", "D", "E", "F"]
 
 
 def _dp_teams_to_df(teams: list[dict]) -> pd.DataFrame:
@@ -1351,6 +1372,11 @@ def _dp_teams_to_df(teams: list[dict]) -> pd.DataFrame:
             "primaryColor":   t.get("primaryColor") or "",
             "secondaryColor": t.get("secondaryColor") or "",
             "logoUrl":        t.get("logoUrl") or "",
+            "nilProfile":     t.get("nilProfile") or "",
+            "nilTier":        t.get("nilTier") or "",
+            "nilMin":         t.get("nilMin"),
+            "nilBase":        t.get("nilBase"),
+            "nilMax":         t.get("nilMax"),
         })
     return pd.DataFrame(rows)
 
@@ -1377,7 +1403,12 @@ def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
         tid = _str(row.get("id"))
         orig = orig_by_id.get(tid, {})
         ps_raw = _str(row.get("pipelineStates"))
-        result.append({
+        nil_profile = _str(row.get("nilProfile")) or None
+        nil_tier    = _str(row.get("nilTier")) or None
+        nil_min     = _int(row.get("nilMin"), None)
+        nil_base    = _int(row.get("nilBase"), None)
+        nil_max     = _int(row.get("nilMax"), None)
+        entry = {
             "id":             tid,
             "name":           _str(row.get("name")),
             "mascot":         _str(row.get("mascot")),
@@ -1391,7 +1422,13 @@ def _dp_df_to_teams(df: pd.DataFrame, original: list[dict]) -> list[dict]:
             "state":          _str(row.get("state")),
             "pipelineStates": [s.strip() for s in ps_raw.split(",") if s.strip()],
             "logoUrl":        _str(row.get("logoUrl")) or _str(orig.get("logoUrl")),
-        })
+        }
+        if nil_profile is not None: entry["nilProfile"] = nil_profile
+        if nil_tier    is not None: entry["nilTier"]    = nil_tier
+        if nil_min     is not None: entry["nilMin"]     = nil_min
+        if nil_base    is not None: entry["nilBase"]    = nil_base
+        if nil_max     is not None: entry["nilMax"]     = nil_max
+        result.append(entry)
     return result
 
 
@@ -1409,6 +1446,7 @@ def _dp_confs_to_df(conferences: list[dict]) -> pd.DataFrame:
             "prestigeFloor":    c.get("prestigeFloor", 35),
             "prestigeCeiling":  c.get("prestigeCeiling", 85),
             "logoUrl":          c.get("logoUrl") or "",
+            "revShareTier":     c.get("revShareTier") or "",
         })
     return pd.DataFrame(rows)
 
@@ -1447,8 +1485,9 @@ def _dp_recalc_conf_prestige(confs_df: pd.DataFrame, teams_df: pd.DataFrame) -> 
 def _dp_df_to_confs(df: pd.DataFrame) -> list[dict]:
     result = []
     for _, row in df.iterrows():
-        cg = row.get("conferenceGames")
-        result.append({
+        cg  = row.get("conferenceGames")
+        rst = str(row.get("revShareTier") or "").strip() or None
+        entry = {
             "id":              str(row.get("id", "")),
             "name":            str(row.get("name", "")),
             "abbreviation":    str(row.get("abbreviation", "")),
@@ -1458,7 +1497,10 @@ def _dp_df_to_confs(df: pd.DataFrame) -> list[dict]:
             "prestigeFloor":   int(row.get("prestigeFloor") or 35),
             "prestigeCeiling": int(row.get("prestigeCeiling") or 85),
             "logoUrl":         row.get("logoUrl") or None,
-        })
+        }
+        if rst is not None:
+            entry["revShareTier"] = rst
+        result.append(entry)
     return result
 
 
@@ -1587,19 +1629,35 @@ def render_data_pack():
     )
 
     with tab_meta:
-        new_name    = st.text_input("Pack name",    value=meta.get("name", ""))
-        new_author  = st.text_input("Author",       value=meta.get("author", ""))
-        new_version = st.number_input("Version", value=int(meta.get("version", 1)), min_value=1, step=1)
-        new_desc    = st.text_area("Description",   value=meta.get("description", ""), height=80)
-        if st.button("Save Meta"):
+        settings = raw.get("settings", {})
+
+        st.markdown("**Meta**")
+        new_name     = st.text_input("Pack name",    value=meta.get("name", ""))
+        new_author   = st.text_input("Author",       value=meta.get("author", ""))
+        new_version  = st.number_input("Version", value=int(meta.get("version", 1)), min_value=1, step=1)
+        new_desc     = st.text_area("Description",   value=meta.get("description", ""), height=80)
+        new_nil_era  = st.checkbox("NIL Era", value=bool(meta.get("nilEra", False)))
+
+        st.markdown("**Settings**")
+        new_starting_year = st.number_input(
+            "Starting year", value=int(settings.get("startingYear", 2026)),
+            min_value=1900, max_value=2100, step=1,
+        )
+
+        if st.button("Save Meta & Settings"):
             st.session_state["dp_raw"] = {
                 **raw,
                 "meta": {
                     "name": new_name, "author": new_author,
                     "version": new_version, "description": new_desc,
+                    "nilEra": new_nil_era,
+                },
+                "settings": {
+                    **settings,
+                    "startingYear": new_starting_year,
                 },
             }
-            st.success("Meta updated.")
+            st.success("Meta & Settings updated.")
 
     with tab_branding:
         branding   = raw.get("branding", {})
@@ -1806,6 +1864,14 @@ def render_data_pack():
 
         confs_df = st.session_state["dp_confs"]
         st.caption(f"{len(confs_df)} conferences")
+        st.info(
+            "**Prestige Floor and Ceiling are auto-recalculated** whenever team conference "
+            "assignments change on the Teams tab.  \n"
+            "**Floor** = 70% of the min team prestige · "
+            "**Ceiling** = 115% of the max team prestige · "
+            "Both capped between 15–95 and rounded to the nearest 5.",
+            icon="ℹ️",
+        )
         _max_games = raw.get("rules", {}).get("schedule", {}).get("gamesPerTeam")
         conf_col_cfg = {
             "id":               st.column_config.TextColumn("ID"),
@@ -1817,6 +1883,7 @@ def render_data_pack():
             ),
             "prestigeFloor":    st.column_config.NumberColumn("Pres Floor",   min_value=1, max_value=99),
             "prestigeCeiling":  st.column_config.NumberColumn("Pres Ceiling", min_value=1, max_value=99),
+            "revShareTier":     st.column_config.SelectboxColumn("Rev Share", options=_REV_SHARE_TIERS),
             "logoUrl":          st.column_config.LinkColumn("Logo URL", display_text="link"),
         }
         _confs_base_key = "_dp_confs_base"
@@ -1876,6 +1943,11 @@ def render_data_pack():
             "primaryColor":   st.column_config.TextColumn("Primary"),
             "secondaryColor": st.column_config.TextColumn("Secondary"),
             "logoUrl":        st.column_config.LinkColumn("Logo URL", display_text="link"),
+            "nilProfile":     st.column_config.TextColumn("NIL Profile"),
+            "nilTier":        st.column_config.SelectboxColumn("NIL Tier", options=_NIL_TIERS),
+            "nilMin":         st.column_config.NumberColumn("NIL Min", min_value=0),
+            "nilBase":        st.column_config.NumberColumn("NIL Base", min_value=0),
+            "nilMax":         st.column_config.NumberColumn("NIL Max", min_value=0),
         }
 
         conf_name_filter_options = ["All"] + sorted(
@@ -1961,115 +2033,6 @@ def render_data_pack():
         st.code(json_str, language="json")
 
     st.divider()
-    st.subheader("Download Logos")
-    st.caption("Fetch logos for one state and download as a ZIP ready to push to GitHub (`logos/{state}/slug.png`).")
-
-    _teams_for_logos = st.session_state.get("dp_teams")
-    if _teams_for_logos is not None and not _teams_for_logos.empty:
-        _states_available = sorted(_teams_for_logos["state"].dropna().unique().tolist())
-        _logo_state = st.selectbox(
-            "State", options=_states_available, key="dp_logo_state",
-        )
-        _dl_remove_bg = st.checkbox(
-            "Remove background", value=True, key="dp_logo_dl_rmbg",
-            help="BFS from all image edges using the auto-detected background colour.",
-        )
-        _dl_remove_enc = st.checkbox(
-            "Remove enclosed white (letter counters)", value=False, key="dp_logo_dl_enc",
-            help="Also removes near-white regions fully enclosed by non-transparent pixels. "
-                 "Don't use if logos have intentional white inside a coloured shape.",
-        )
-        _dl_pad_square = st.checkbox(
-            "Pad to square", value=False, key="dp_logo_dl_pad",
-            help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
-        )
-        if st.button("Build ZIP", key="dp_logo_zip_btn"):
-            _logo_rows = _teams_for_logos[
-                _teams_for_logos["state"] == _logo_state
-            ][["id", "logoUrl"]].dropna(subset=["logoUrl"])
-            _logo_rows = _logo_rows[_logo_rows["logoUrl"].str.strip() != ""]
-
-            _zip_buf = io.BytesIO()
-            _fetched = _skipped = 0
-            _prog = st.progress(0.0, text="Fetching logos…")
-            _total = len(_logo_rows)
-
-            with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_STORED) as _zf:
-                for _idx, (_i, _row) in enumerate(_logo_rows.iterrows()):
-                    _prog.progress((_idx + 1) / _total, text=f"{_idx + 1}/{_total} — {_row['id']}")
-                    try:
-                        _resp = requests.get(_row["logoUrl"], timeout=10)
-                        if _resp.status_code == 200:
-                            _png = _resp.content
-                            if _dl_remove_bg:
-                                _png = _remove_white_bg(_png, remove_enclosed=_dl_remove_enc)
-                            if _dl_pad_square:
-                                _png = _pad_to_square(_png)
-                            _zf.writestr(
-                                f"{_logo_state.lower()}/{_row['id']}.png",
-                                _png,
-                            )
-                            _fetched += 1
-                        else:
-                            _skipped += 1
-                    except Exception:
-                        _skipped += 1
-
-            _prog.empty()
-            _zip_buf.seek(0)
-            st.download_button(
-                label=f"Download {_logo_state.lower()}_logos.zip  ({_fetched} logos, {_skipped} skipped)",
-                data=_zip_buf,
-                file_name=f"{_logo_state.lower()}_logos.zip",
-                mime="application/zip",
-                key="dp_logo_zip_dl",
-            )
-
-    st.divider()
-    st.subheader("Process Local PNGs")
-    st.caption("Upload PNGs, apply adjustments, and download the results as a ZIP. To upload a whole folder, open the picker, navigate to the folder, and press Ctrl+A to select all.")
-
-    _local_files = st.file_uploader(
-        "Upload PNGs", type="png", accept_multiple_files=True, key="dp_local_png_upload",
-    )
-    if _local_files:
-        st.caption(f"{len(_local_files)} PNG(s) uploaded.")
-        _local_remove_bg = st.checkbox(
-            "Remove background", value=False, key="dp_local_rmbg",
-            help="BFS from all image edges using the auto-detected background colour.",
-        )
-        _local_remove_enc = st.checkbox(
-            "Remove enclosed white (letter counters)", value=False, key="dp_local_enc",
-            help="Also removes near-white regions fully enclosed by non-transparent pixels.",
-        )
-        _local_pad_square = st.checkbox(
-            "Pad to square", value=True, key="dp_local_pad",
-            help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
-        )
-        if st.button("Process & Build ZIP", key="dp_local_zip_btn"):
-            _local_buf = io.BytesIO()
-            _local_prog = st.progress(0.0, text="Processing…")
-            _local_total = len(_local_files)
-            with zipfile.ZipFile(_local_buf, "w", zipfile.ZIP_STORED) as _zf:
-                for _li, _uf in enumerate(_local_files):
-                    _local_prog.progress((_li + 1) / _local_total, text=f"{_li + 1}/{_local_total} — {_uf.name}")
-                    _png = _uf.read()
-                    if _local_remove_bg:
-                        _png = _remove_white_bg(_png, remove_enclosed=_local_remove_enc)
-                    if _local_pad_square:
-                        _png = _pad_to_square(_png)
-                    _zf.writestr(_uf.name, _png)
-            _local_prog.empty()
-            _local_buf.seek(0)
-            st.download_button(
-                label=f"Download processed_{_local_total}_logos.zip",
-                data=_local_buf,
-                file_name=f"processed_{_local_total}_logos.zip",
-                mime="application/zip",
-                key="dp_local_zip_dl",
-            )
-
-    st.divider()
     st.subheader("Post to Pastebin")
 
     # Use site-level key from Streamlit secrets or env var; fall back to user input.
@@ -2097,6 +2060,117 @@ def render_data_pack():
     if "dp_paste_url" in st.session_state:
         st.success("Posted! Copy this URL into Campus Hoops to load your data pack:")
         st.code(st.session_state["dp_paste_url"])
+
+    # ------------------------------------------------------------------ 4. Logo Lab
+    st.divider()
+    st.subheader("4 · Logo Lab")
+
+    tab_fetch, tab_process = st.tabs(["Fetch from URLs", "Process Local PNGs"])
+
+    with tab_fetch:
+        st.caption("Fetch logos from each team's `logoUrl` for a given state and download as a ZIP ready to push to GitHub (`logos/{state}/slug.png`).")
+        _teams_for_logos = st.session_state.get("dp_teams")
+        if _teams_for_logos is not None and not _teams_for_logos.empty:
+            _states_available = sorted(_teams_for_logos["state"].dropna().unique().tolist())
+            _logo_state = st.selectbox(
+                "State", options=_states_available, key="dp_logo_state",
+            )
+            _dl_remove_bg = st.checkbox(
+                "Remove background", value=True, key="dp_logo_dl_rmbg",
+                help="BFS from all image edges using the auto-detected background colour.",
+            )
+            _dl_remove_enc = st.checkbox(
+                "Remove enclosed white (letter counters)", value=False, key="dp_logo_dl_enc",
+                help="Also removes near-white regions fully enclosed by non-transparent pixels. "
+                     "Don't use if logos have intentional white inside a coloured shape.",
+            )
+            _dl_pad_square = st.checkbox(
+                "Pad to square", value=False, key="dp_logo_dl_pad",
+                help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
+            )
+            if st.button("Build ZIP", key="dp_logo_zip_btn"):
+                _logo_rows = _teams_for_logos[
+                    _teams_for_logos["state"] == _logo_state
+                ][["id", "logoUrl"]].dropna(subset=["logoUrl"])
+                _logo_rows = _logo_rows[_logo_rows["logoUrl"].str.strip() != ""]
+
+                _zip_buf = io.BytesIO()
+                _fetched = _skipped = 0
+                _prog = st.progress(0.0, text="Fetching logos…")
+                _total = len(_logo_rows)
+
+                with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_STORED) as _zf:
+                    for _idx, (_i, _row) in enumerate(_logo_rows.iterrows()):
+                        _prog.progress((_idx + 1) / _total, text=f"{_idx + 1}/{_total} — {_row['id']}")
+                        try:
+                            _resp = requests.get(_row["logoUrl"], timeout=10)
+                            if _resp.status_code == 200:
+                                _png = _resp.content
+                                if _dl_remove_bg:
+                                    _png = _remove_white_bg(_png, remove_enclosed=_dl_remove_enc)
+                                if _dl_pad_square:
+                                    _png = _pad_to_square(_png)
+                                _zf.writestr(
+                                    f"{_logo_state.lower()}/{_row['id']}.png",
+                                    _png,
+                                )
+                                _fetched += 1
+                            else:
+                                _skipped += 1
+                        except Exception:
+                            _skipped += 1
+
+                _prog.empty()
+                _zip_buf.seek(0)
+                st.download_button(
+                    label=f"Download {_logo_state.lower()}_logos.zip  ({_fetched} logos, {_skipped} skipped)",
+                    data=_zip_buf,
+                    file_name=f"{_logo_state.lower()}_logos.zip",
+                    mime="application/zip",
+                    key="dp_logo_zip_dl",
+                )
+
+    with tab_process:
+        st.caption("Upload PNGs, apply adjustments, and download the results as a ZIP. To upload a whole folder, open the picker, navigate to the folder, and press Ctrl+A to select all.")
+        _local_files = st.file_uploader(
+            "Upload PNGs", type="png", accept_multiple_files=True, key="dp_local_png_upload",
+        )
+        if _local_files:
+            st.caption(f"{len(_local_files)} PNG(s) uploaded.")
+            _local_remove_bg = st.checkbox(
+                "Remove background", value=False, key="dp_local_rmbg",
+                help="BFS from all image edges using the auto-detected background colour.",
+            )
+            _local_remove_enc = st.checkbox(
+                "Remove enclosed white (letter counters)", value=False, key="dp_local_enc",
+                help="Also removes near-white regions fully enclosed by non-transparent pixels.",
+            )
+            _local_pad_square = st.checkbox(
+                "Pad to square", value=True, key="dp_local_pad",
+                help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
+            )
+            if st.button("Process & Build ZIP", key="dp_local_zip_btn"):
+                _local_buf = io.BytesIO()
+                _local_prog = st.progress(0.0, text="Processing…")
+                _local_total = len(_local_files)
+                with zipfile.ZipFile(_local_buf, "w", zipfile.ZIP_STORED) as _zf:
+                    for _li, _uf in enumerate(_local_files):
+                        _local_prog.progress((_li + 1) / _local_total, text=f"{_li + 1}/{_local_total} — {_uf.name}")
+                        _png = _uf.read()
+                        if _local_remove_bg:
+                            _png = _remove_white_bg(_png, remove_enclosed=_local_remove_enc)
+                        if _local_pad_square:
+                            _png = _pad_to_square(_png)
+                        _zf.writestr(_uf.name, _png)
+                _local_prog.empty()
+                _local_buf.seek(0)
+                st.download_button(
+                    label=f"Download processed_{_local_total}_logos.zip",
+                    data=_local_buf,
+                    file_name=f"processed_{_local_total}_logos.zip",
+                    mime="application/zip",
+                    key="dp_local_zip_dl",
+                )
 
 
 # ================================================================== router
