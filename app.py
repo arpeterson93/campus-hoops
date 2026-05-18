@@ -1566,13 +1566,13 @@ def _dp_load(url_or_raw: str | None = None, file_bytes: bytes | None = None):
 def render_data_pack():
     st.header("Data Pack Editor")
     st.caption(
-        "Import a data pack from Pastebin, edit teams and conferences, "
+        "Import a data pack from Pastebin/JSON, edit, "
         "then post the updated pack back to Pastebin and drop the URL into Campus Hoops."
     )
 
     # ------------------------------------------------------------------ 1. Import
     st.subheader("1 · Import")
-    with st.expander("Start from existing JSON", expanded="dp_raw" not in st.session_state):
+    with st.expander("Start from existing data pack", expanded="dp_raw" not in st.session_state):
         col_url, col_btn = st.columns([5, 1])
         url_input = col_url.text_input(
             "Pastebin URL", placeholder="https://pastebin.com/abc123",
