@@ -2009,7 +2009,7 @@ def render_data_pack():
                         new_full.at[idx, col] = val
             new_full["conferenceId"] = new_full["_conf_name"].map(conf_name_to_id).fillna(new_full["conferenceId"])
             st.session_state["dp_teams"] = new_full
-            for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_") and k != base_key]:
+            for _k in [k for k in st.session_state if k.startswith("_dp_teams_base_")]:
                 del st.session_state[_k]
 
         c1, c2 = st.columns(2)
