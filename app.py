@@ -145,6 +145,20 @@ def _remove_white_bg(png_bytes: bytes, tolerance: int = 30, remove_enclosed: boo
     return out.getvalue()
 
 
+def _add_white_stroke(png_bytes: bytes, radius: int = 1) -> bytes:
+    """Add a white border of `radius` pixels around all non-transparent content."""
+    from PIL import ImageFilter
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    _, _, _, a = img.split()
+    a_dilated = a.filter(ImageFilter.MaxFilter(radius * 2 + 1))
+    white = Image.new("RGBA", img.size, (255, 255, 255, 0))
+    white.putalpha(a_dilated)
+    result = Image.alpha_composite(white, img)
+    out = io.BytesIO()
+    result.save(out, format="PNG")
+    return out.getvalue()
+
+
 def _pad_to_square(png_bytes: bytes) -> bytes:
     """Expand a logo to a square canvas by adding transparent padding, centered."""
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
@@ -2117,6 +2131,10 @@ def render_data_pack():
                 help="Also removes near-white regions fully enclosed by non-transparent pixels. "
                      "Don't use if logos have intentional white inside a coloured shape.",
             )
+            _dl_white_stroke = st.checkbox(
+                "Add 1px white border", value=False, key="dp_logo_dl_stroke",
+                help="Grow a 1-pixel white outline around all non-transparent content. Useful for dark-mode logos where edges need contrast.",
+            )
             _dl_pad_square = st.checkbox(
                 "Pad to square", value=False, key="dp_logo_dl_pad",
                 help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
@@ -2141,6 +2159,8 @@ def render_data_pack():
                                 _png = _resp.content
                                 if _dl_remove_bg:
                                     _png = _remove_white_bg(_png, remove_enclosed=_dl_remove_enc)
+                                if _dl_white_stroke:
+                                    _png = _add_white_stroke(_png)
                                 if _dl_pad_square:
                                     _png = _pad_to_square(_png)
                                 _zf.writestr(
@@ -2178,6 +2198,10 @@ def render_data_pack():
                 "Remove enclosed white (letter counters)", value=False, key="dp_local_enc",
                 help="Also removes near-white regions fully enclosed by non-transparent pixels.",
             )
+            _local_white_stroke = st.checkbox(
+                "Add 1px white border", value=False, key="dp_local_stroke",
+                help="Grow a 1-pixel white outline around all non-transparent content. Useful for dark-mode logos where edges need contrast.",
+            )
             _local_pad_square = st.checkbox(
                 "Pad to square", value=True, key="dp_local_pad",
                 help="Expand each logo to a square canvas with transparent padding, keeping the image centered.",
@@ -2192,6 +2216,8 @@ def render_data_pack():
                         _png = _uf.read()
                         if _local_remove_bg:
                             _png = _remove_white_bg(_png, remove_enclosed=_local_remove_enc)
+                        if _local_white_stroke:
+                            _png = _add_white_stroke(_png)
                         if _local_pad_square:
                             _png = _pad_to_square(_png)
                         _zf.writestr(_uf.name, _png)

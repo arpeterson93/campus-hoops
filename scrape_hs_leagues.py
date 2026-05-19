@@ -87,6 +87,11 @@ CONF_EXTERNAL_STANDINGS: dict[str, str] = {
 # team roster skeleton and for logo / color data.
 QRF_STATES: set[str] = {"mn"}
 
+# States where Massey Ratings are fetched (via Selenium) to provide separate
+# offense/defense ratings and historical prestige.  QRF_STATES are excluded
+# automatically (QRF takes priority for those states).
+MASSEY_STATES: set[str] = set(STATES)
+
 BASE_URL   = "https://www.maxpreps.com"
 CACHE_DIR  = Path(".scrape_cache")
 OUTPUT_DIR = Path("hs_packs")
@@ -400,6 +405,43 @@ def _normalize_qrf(supp_map: dict) -> dict[str, float]:
     return {norm: (v - mn) / span for norm, v in qrf.items()}
 
 
+def _build_global_qrf_norms(
+    qrf_season_raw: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """
+    Normalize raw QRF values globally across ALL seasons to [0, 1].
+    The best team across all history scores 1.0; a current-year team only
+    earns a high od_norm if they compare favourably to historical peaks.
+    """
+    all_vals = [v for raw in qrf_season_raw.values() for v in raw.values()]
+    if not all_vals:
+        return {}
+    g_min, g_max = min(all_vals), max(all_vals)
+    g_span = g_max - g_min or 1.0
+    return {
+        season: {norm: (v - g_min) / g_span for norm, v in raw.items()}
+        for season, raw in qrf_season_raw.items()
+    }
+
+
+def _build_global_rating_norm(
+    all_rankings: dict[str, dict[str, "Ranking"]],
+) -> dict[str, float]:
+    """
+    Normalize current-season MaxPreps ratings against the global pool of ALL
+    seasons' ratings so od_norm reflects historical context, not just this year.
+    """
+    all_vals = [r.rating for rmap in all_rankings.values() for r in rmap.values()]
+    if not all_vals:
+        return {}
+    g_min, g_max = min(all_vals), max(all_vals)
+    g_span = g_max - g_min or 1.0
+    return {
+        slug: (r.rating - g_min) / g_span
+        for slug, r in all_rankings.get(CURRENT_SEASON, {}).items()
+    }
+
+
 def _qrf_lookup(team: "TeamConf", qrf_norms: dict[str, float]) -> float | None:
     """Look up a team's QRF-based normalized score by name matching."""
     tn = _supp_norm(team.name)
@@ -417,6 +459,15 @@ def _qrf_lookup(team: "TeamConf", qrf_norms: dict[str, float]) -> float | None:
     return best_val
 
 
+def _massey_lookup(team_name: str, norm_dict: dict[str, float]) -> float | None:
+    """Delegate to fetch_massey.lookup() for fuzzy name matching."""
+    try:
+        import fetch_massey
+        return fetch_massey.lookup(team_name, norm_dict)
+    except ImportError:
+        return None
+
+
 def _compute_qrf_prestige(
     team: "TeamConf",
     qrf_season_norms: dict[str, dict[str, float]],
@@ -425,6 +476,35 @@ def _compute_qrf_prestige(
     total_w = total_s = 0.0
     for season, weight in zip(SEASONS_HISTORY, PRESTIGE_WEIGHTS):
         val = _qrf_lookup(team, qrf_season_norms.get(season, {}))
+        if val is not None:
+            total_s += val * weight
+            total_w += weight
+    return (total_s / total_w) if total_w > 1e-6 else None
+
+
+def _mp_season_to_massey_year(mp_season: str) -> int:
+    """Convert MaxPreps season slug to Massey year (ending year). '25-26' → 2026."""
+    _, b = mp_season.split("-")
+    return 2000 + int(b)
+
+
+def _compute_massey_prestige_raw(
+    team_name: str,
+    rat_by_year: dict[int, dict[str, float]],
+) -> float | None:
+    """
+    Weighted average of raw Massey Rat values across SEASONS_HISTORY.
+    Only seasons where the team appears contribute; weight is renormalised
+    across those seasons so a team present in fewer years isn't capped low.
+    Returns None if the team has no Massey data in any season.
+    """
+    total_w = total_s = 0.0
+    for mp_season, weight in zip(SEASONS_HISTORY, PRESTIGE_WEIGHTS):
+        year    = _mp_season_to_massey_year(mp_season)
+        rat_map = rat_by_year.get(year, {})
+        if not rat_map:
+            continue
+        val = _massey_lookup(team_name, rat_map)
         if val is not None:
             total_s += val * weight
             total_w += weight
@@ -569,11 +649,12 @@ def _lookup_supp(
 
 
 def infer_conference_scores(
-    conf_teams:  list["TeamConf"],
-    state_norm:  dict[str, float],
-    rankings:    dict[str, "Ranking"],
-    supplements: dict[str, TeamSupplement] | None = None,
-    qrf_norms:   dict[str, float] | None = None,
+    conf_teams:      list["TeamConf"],
+    state_norm:      dict[str, float],
+    rankings:        dict[str, "Ranking"],
+    supplements:     dict[str, TeamSupplement] | None = None,
+    qrf_norms:       dict[str, float] | None = None,
+    massey_ovr_norm: dict[str, float] | None = None,
 ) -> dict[str, float | None]:
     """
     Returns {team_slug: normalized_score [0,1]} for every team in the conference.
@@ -581,11 +662,13 @@ def infer_conference_scores(
 
     Known-point priority for regression anchors:
       1. QRF norm (qrf_norms) when provided
-      2. MaxPreps ranking (state_norm) as fallback
+      2. Massey overall norm (massey_ovr_norm) when provided and QRF absent
+      3. MaxPreps ranking (state_norm) as final fallback
     Remaining teams are interpolated via win-rate regression from those anchors.
     """
-    supplements = supplements or {}
-    qrf_norms   = qrf_norms or {}
+    supplements     = supplements or {}
+    qrf_norms       = qrf_norms or {}
+    massey_ovr_norm = massey_ovr_norm or {}
     result: dict[str, float | None] = {}
 
     # Partition into active (have played at least 1 game) and ghost (0-0)
@@ -610,22 +693,26 @@ def infer_conference_scores(
         total  = cw + cl
         win_rates.append(cw / total if total > 0 else 0.5)
 
-    # Identify known-score teams: prefer QRF, fall back to MaxPreps.
-    # When QRF data is available for this state, skip the MaxPreps fallback —
-    # MaxPreps ratings for teams outside the QRF system (e.g., MACS private
-    # schools) are inflated by weak-opposition win rates and produce bad anchors.
+    # Identify known-score teams: prefer QRF, then Massey overall, then MaxPreps.
+    # When QRF or Massey data is available, skip the MaxPreps fallback — MaxPreps
+    # ratings for teams outside those systems can be inflated by schedule strength.
+    has_external = bool(qrf_norms) or bool(massey_ovr_norm)
     known: list[tuple[int, float]] = []
     for i, t in enumerate(active):
-        # 1. Try QRF first
+        # 1. QRF (highest priority for QRF states)
         qrf_score = _qrf_lookup(t, qrf_norms)
         if qrf_score is not None:
             known.append((i, qrf_score))
             continue
 
-        # 2. Fall back to MaxPreps ranking only when QRF is not available for
-        #    this state (qrf_norms empty).  In QRF mode, unmatched teams are
-        #    estimated from win-rate regression anchored by their QRF-rated peers.
-        if not qrf_norms:
+        # 2. Massey overall (primary for non-QRF states when Massey is enabled)
+        massey_score = _massey_lookup(t.name, massey_ovr_norm)
+        if massey_score is not None:
+            known.append((i, massey_score))
+            continue
+
+        # 3. MaxPreps ranking — only used when neither QRF nor Massey is active
+        if not has_external:
             r = match_ranking(t.slug, t.name, rankings)
             if r is not None and r.slug in state_norm:
                 if r.slug != t.slug:   # fuzzy match — validate with win-rate guard
@@ -639,7 +726,9 @@ def infer_conference_scores(
             if r is not None and r.slug in state_norm:
                 known.append((i, state_norm[r.slug]))
 
-    scores = _interpolate_positions(known, n, win_rates=win_rates, qrf_mode=bool(qrf_norms))
+    scores = _interpolate_positions(
+        known, n, win_rates=win_rates, qrf_mode=has_external
+    )
 
     for i, t in enumerate(active):
         result[t.slug] = scores[i]
@@ -1043,10 +1132,12 @@ def build_team(
     team:          TeamConf,
     conf_id:       str,
     state:         str,
-    od_norm:       float,       # current-season [0,1] → offense/defense
+    off_norm:      float,       # current-season [0,1] → offenseRating
+    def_norm:      float,       # current-season [0,1] → defenseRating
     prestige_norm: float,       # multi-year [0,1] → prestige
 ) -> dict:
-    od       = to_offense_defense(od_norm)
+    offense  = to_offense_defense(off_norm)
+    defense  = to_offense_defense(def_norm)
     prestige = to_prestige(prestige_norm)
     mascot   = extract_mascot(team.slug, team.name)
     abbr     = make_abbreviation(team.name)
@@ -1071,8 +1162,8 @@ def build_team(
         "conferenceId":   conf_id,
         "state":          state.upper(),
         "pipelineStates": [state.upper()],
-        "offenseRating":  od,
-        "defenseRating":  od,
+        "offenseRating":  offense,
+        "defenseRating":  defense,
         "prestige":       prestige,
         "primaryColor":   primary,
         "secondaryColor": secondary,
@@ -1188,6 +1279,7 @@ def scrape_state(state: str) -> dict:
 
     # 5b. For QRF states, fetch historical seasons to build prestige from QRF
     qrf_season_norms: dict[str, dict[str, float]] = {}
+    qrf_season_raw:   dict[str, dict[str, float]] = {}   # raw values for global od bounds
     if state.lower() in QRF_STATES:
         try:
             import scrape_mn_scores as _mn_scores
@@ -1196,7 +1288,10 @@ def scrape_state(state: str) -> dict:
                 mn_season = _mp_to_mn_season(mp_season)
                 try:
                     season_supp = _mn_scores.fetch(mn_season)
-                    qrf_norms   = _normalize_qrf(season_supp)
+                    raw = {norm: s.rating for norm, s in season_supp.items() if s.rating is not None}
+                    if raw:
+                        qrf_season_raw[mp_season] = raw
+                    qrf_norms = _normalize_qrf(season_supp)
                     if qrf_norms:
                         qrf_season_norms[mp_season] = qrf_norms
                         print(f"    {mn_season}: {len(qrf_norms)} QRF values")
@@ -1207,38 +1302,116 @@ def scrape_state(state: str) -> dict:
         except ImportError:
             pass
 
-    # 6. Build team and conference entries
-    all_team_entries: list[dict] = []
-    all_conf_entries: list[dict] = []
+    # 5c. Fetch Massey Ratings (Selenium, off/def + historical prestige) if enabled
+    massey_off_norm: dict[str, float] = {}
+    massey_def_norm: dict[str, float] = {}
+    massey_ovr_norm: dict[str, float] = {}
+    massey_rat_by_year: dict[int, dict[str, float]] = {}  # year → {norm_key: raw Rat}
+    if state.lower() in MASSEY_STATES and state.lower() not in QRF_STATES:
+        try:
+            import fetch_massey as _massey
+            print(f"  Fetching Massey ratings — {len(SEASONS_HISTORY)} seasons…")
+            for mp_season in SEASONS_HISTORY:
+                year    = _mp_season_to_massey_year(mp_season)
+                yr_data = _massey.fetch_massey_state_year(state, year)
+                if yr_data:
+                    massey_rat_by_year[year] = {k: v.overall for k, v in yr_data.items()}
+                    print(f"    {year}: {len(yr_data)} teams")
+                else:
+                    print(f"    {year}: no data")
+
+            # od norms come from the current season only (hits cache — already fetched above)
+            current_yr      = _mp_season_to_massey_year(CURRENT_SEASON)
+            current_yr_data = _massey.fetch_massey_state_year(state, current_yr)
+            if current_yr_data:
+                massey_off_norm, massey_def_norm, massey_ovr_norm = (
+                    _massey.normalize_massey(current_yr_data)
+                )
+                print(f"    od norms built from {current_yr} ({len(current_yr_data)} teams)")
+            else:
+                print(f"    [warn] No {current_yr} Massey data — od falls back to MaxPreps")
+        except ImportError:
+            print("  [warn] fetch_massey.py not found — skipping Massey step")
+        except Exception as exc:
+            print(f"  [warn] Massey fetch failed for {state.upper()}: {exc}")
+
+    # 6. Build team and conference entries (two-pass for end-normalized prestige)
+
+    # ── Global od anchors: normalize against all-years pool, not just current ──
+    qrf_state = state.lower() in QRF_STATES
+    if qrf_state and qrf_season_raw:
+        _qrf_od_global = _build_global_qrf_norms(qrf_season_raw)
+        od_state_norm  = current_norm                         # unused in QRF mode
+        od_qrf_norms   = _qrf_od_global.get(CURRENT_SEASON, {})
+        print(f"  Global QRF od bounds: {len(qrf_season_raw)} seasons, "
+              f"{len(od_qrf_norms)} teams in current pool")
+    else:
+        od_state_norm = _build_global_rating_norm(all_rankings)
+        od_qrf_norms  = None
+        print(f"  Global rating od bounds: {len(all_rankings)} seasons, "
+              f"{len(od_state_norm)} teams in current pool")
+
+    # ── Pass 1: collect (team, conf_id, off_norm, def_norm, raw_prestige_norm) ─
+    collected: list[tuple] = []   # (TeamConf, conf_id, off_norm, def_norm, p_norm)
 
     for conf in confs_raw:
-        conf_teams = conf_teams_map.get(conf["id"], [])
-
-        # Infer a current-season [0,1] score for every active team in the conference
+        conf_teams  = conf_teams_map.get(conf["id"], [])
         conf_scores = infer_conference_scores(
-            conf_teams, current_norm, current_rankings,
+            conf_teams, od_state_norm, current_rankings,
             supplements=supplements,
-            qrf_norms=qrf_season_norms.get(CURRENT_SEASON) if qrf_season_norms else None,
+            qrf_norms=od_qrf_norms,
+            massey_ovr_norm=massey_ovr_norm or None,
         )
-
-        team_entries: list[dict] = []
         for t in conf_teams:
             od_norm = conf_scores.get(t.slug)
             if od_norm is None:
                 continue    # excluded (0-0 record)
 
-            # Prestige: prefer QRF history; fall back to MaxPreps history
+            # Separate off/def from Massey when available; fall back to od_norm
+            off_norm = _massey_lookup(t.name, massey_off_norm)
+            def_norm = _massey_lookup(t.name, massey_def_norm)
+            if off_norm is None:
+                off_norm = od_norm
+            if def_norm is None:
+                def_norm = od_norm
+
+            # Prestige raw score priority:
+            #   1. QRF history   (QRF states only)
+            #   2. Massey Rat history  (non-QRF states where Massey data exists)
+            #   3. MaxPreps rating history
+            #   4. Current-season od_norm as last resort
             p_norm = None
-            if state.lower() in QRF_STATES and qrf_season_norms:
+            if qrf_state and qrf_season_norms:
                 p_norm = _compute_qrf_prestige(t, qrf_season_norms)
+            if p_norm is None and massey_rat_by_year:
+                p_norm = _compute_massey_prestige_raw(t.name, massey_rat_by_year)
             if p_norm is None:
                 p_norm = compute_prestige_norm(t.slug, t.name, season_norms, all_rankings)
             if p_norm is None:
                 p_norm = od_norm
 
-            entry = build_team(t, conf["id"], state, od_norm, p_norm)
-            team_entries.append(entry)
+            collected.append((t, conf["id"], off_norm, def_norm, p_norm))
 
+    # ── End-normalize prestige so [25, 95] is fully utilized ──────────────────
+    raw_p_vals = [p for _, _, _, _, p in collected]
+    if len(raw_p_vals) > 1:
+        p_min  = min(raw_p_vals)
+        p_span = (max(raw_p_vals) - p_min) or 1.0
+    else:
+        p_min, p_span = 0.0, 1.0
+
+    # ── Pass 2: build team/conf entries with end-normalized prestige ──────────
+    all_team_entries: list[dict] = []
+    all_conf_entries: list[dict] = []
+    entries_by_conf:  dict[str, list[dict]] = {}
+
+    for t, conf_id, off_norm, def_norm, raw_p in collected:
+        prestige_norm_final = (raw_p - p_min) / p_span
+        entry = build_team(t, conf_id, state, off_norm, def_norm, prestige_norm_final)
+        entries_by_conf.setdefault(conf_id, []).append(entry)
+
+    for conf in confs_raw:
+        team_entries = entries_by_conf.get(conf["id"], [])
         if team_entries:
             all_conf_entries.append(build_conf(conf, team_entries))
             all_team_entries.extend(team_entries)
@@ -1316,6 +1489,14 @@ def main():
             )
         except Exception as exc:
             print(f"  ERROR on {state.upper()}: {exc}")
+
+    # Close the Massey Selenium driver if it was used this run
+    if MASSEY_STATES:
+        try:
+            import fetch_massey as _massey
+            _massey.close_driver()
+        except Exception:
+            pass
 
     print("\nDone.")
 
